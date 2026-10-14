@@ -539,6 +539,24 @@ const reuseDialog = renderText(seam.DispatchDialog({ ...presetFixture, choice: '
 check('dispatch: reusing a session hides the posture, because it cannot change it', reuseDialog.includes('权限姿态') === false)
 const unreadablePresets = renderText(seam.DispatchDialog({ ...presetFixture, presets: [] })).join(' | ')
 check('dispatch: an unreadable preset list says so instead of showing an empty control', unreadablePresets.includes('读不到预设列表'))
+
+// The sandbox mode is a separate axis from the agent preset — the preset picks
+// what the agent may use, the mode picks what its tools may touch — and it is the
+// one that decided whether the dispatched agent could write at all.
+const sandboxFixture = {
+  ...presetFixture,
+  sandbox: { options: [{ value: 'workspace-write', name: 'Workspace Write' }], effective: 'workspace-write', error: null },
+}
+const sandboxDialog = renderText(seam.DispatchDialog(sandboxFixture)).join(' | ')
+check('dispatch: the dialog shows the sandbox mode a new session will run in', sandboxDialog.includes('沙箱模式') && sandboxDialog.includes('工作区内修改'), sandboxDialog.slice(0, 260))
+check('dispatch: the mode is explained, not just labelled', sandboxDialog.includes('不会替你改') && sandboxDialog.includes('新建会话将在'))
+check('sandbox labels: the catalog name is only a fallback for an unknown mode', seam.sandboxLabel('workspace-write', zhT, 'workspace-write') === '工作区内修改')
+check('dispatch: the mode control is read-only — the workbench never changes a DSH-wide setting', findNodes(seam.DispatchDialog(sandboxFixture), 'select').filter((node) => node.props?.className === 'dw-sandbox').length === 0)
+check('sandbox labels: a known mode is localised', seam.sandboxLabel('danger-full-access', zhT) === '完全访问')
+check('sandbox labels: an unknown mode falls back to its own id rather than blank', seam.sandboxLabel('something-new', zhT) === 'something-new')
+check('sandbox labels: an absent mode says so', seam.sandboxLabel(null, zhT) === '读不到沙箱模式')
+const noSandboxYet = renderText(seam.DispatchDialog({ ...presetFixture, sandbox: null })).join(' | ')
+check('dispatch: a pending sandbox read does not claim a mode', noSandboxYet.includes('沙箱模式'))
 check('dispatch: the project\u2019s existing sessions are offered', dialogText.includes('eeeeeeee'), dialogText)
 check('dispatch: the three actions are present', dialogText.includes('新建会话并发送') && dialogText.includes('复制提示词') && dialogText.includes('取消'))
 check('dispatch: nothing renders without a prompt', seam.DispatchDialog({ prompt: null, t: zhT }) === null)

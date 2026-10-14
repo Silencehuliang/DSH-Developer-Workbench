@@ -52,7 +52,7 @@ window.__ModuleLoader__.load({
      * `npm run ui` clicks the button that would throw — static and runtime checks
      * for the same class of mistake.
      */
-    const inject = ['slots', 'locale', 'uiWorkspace', 'remote', 'remote.session', 'remote.agentPresets']
+    const inject = ['slots', 'locale', 'uiWorkspace', 'remote', 'remote.session', 'remote.agentPresets', 'remote.permissionPresets']
 
     const zh = {
       panel: '开发工作台',
@@ -168,6 +168,13 @@ window.__ModuleLoader__.load({
       dispatchPreset: '权限姿态',
       dispatchPresetHostDefault: '宿主默认',
       dispatchPresetUnknown: '读不到预设列表',
+      dispatchSandbox: '沙箱模式',
+      dispatchSandboxHint: '新建会话将在这个模式下运行。它由 DSH 的全局设置决定（在输入框的权限选择器里改），工作台不会替你改 —— 那会影响之后所有新会话。',
+      dispatchSandboxUnknown: '读不到沙箱模式',
+      // `SandboxMode` is a closed set of three, so the label can be exact.
+      sandboxMode_read_only: '只读',
+      sandboxMode_workspace_write: '工作区内修改',
+      sandboxMode_danger_full_access: '完全访问',
       dispatchHandoff: '交接文档',
       dispatchHandoffNew: '这次派发会把它写到上面这个路径 —— 系统临时目录，不是工作区。',
       dispatchHandoffResume: '将读取这份已有文档，按它列出的 suggested skills 继续。',
@@ -328,6 +335,12 @@ window.__ModuleLoader__.load({
       dispatchPreset: 'Posture',
       dispatchPresetHostDefault: 'Host default',
       dispatchPresetUnknown: 'the preset list is unreadable',
+      dispatchSandbox: 'Sandbox',
+      dispatchSandboxHint: 'A new session runs in this mode. It comes from a DSH-wide setting (change it in the composer’s permission selector); the workbench will not change it for you, because that would affect every later session too.',
+      dispatchSandboxUnknown: 'the sandbox mode is unreadable',
+      sandboxMode_read_only: 'Read-only',
+      sandboxMode_workspace_write: 'Workspace Write',
+      sandboxMode_danger_full_access: 'Full Access',
       dispatchHandoff: 'Handoff document',
       dispatchHandoffNew: 'This dispatch will write it to the path above — the OS temp directory, not the workspace.',
       dispatchHandoffResume: 'It will read this existing document and continue from the skills it suggests.',
@@ -429,6 +442,27 @@ window.__ModuleLoader__.load({
       // than putting braces on screen.
       if (translated === key || /\{[A-Za-z0-9_]+\}/.test(translated)) return fallback
       return translated
+    }
+
+    /**
+     * Localize a sandbox mode.
+     *
+     * `SandboxMode` is a closed set — `read-only`, `workspace-write`,
+     * `danger-full-access` — so the label can be exact instead of echoing a wire
+     * id at the user. An unknown value falls back to itself rather than blank.
+     *
+     * @param value - the mode id.
+     * @param t - the bound translate function.
+     * @param fallbackName - the catalog's own name, used only for a mode this build has no wording for.
+     * @returns the label to show.
+     */
+    function sandboxLabel(value, t, fallbackName) {
+      if (typeof value !== 'string' || value.length === 0) return t('dispatchSandboxUnknown')
+      const key = `sandboxMode_${value.replace(/[^A-Za-z0-9]+/g, '_')}`
+      const translated = t(key)
+      if (translated !== key) return translated
+      // The catalog's own name is often the wire id, so it is the second choice.
+      return typeof fallbackName === 'string' && fallbackName.length > 0 ? fallbackName : value
     }
 
     /** Short local timestamp for a list row. */
@@ -1701,7 +1735,7 @@ window.__ModuleLoader__.load({
      * network or a reconciler.
      */
     function DispatchDialog(props) {
-      const { prompt, draft, choice, sessions, presets, preset, presetsError, busy, error, notice, t, onDraft, onChoice, onPreset, onSend, onCopy, onClose } = props
+      const { prompt, draft, choice, sessions, presets, preset, presetsError, sandbox, busy, error, notice, t, onDraft, onChoice, onPreset, onSend, onCopy, onClose } = props
       if (prompt === null || prompt === undefined) return null
 
       const targets = prompt.targets ?? {}
@@ -1794,6 +1828,31 @@ window.__ModuleLoader__.load({
       // user is the one who gets to decide that.
       const presetList = Array.isArray(presets) ? presets : []
       if (choice === 'new') {
+        // The sandbox mode, shown because it is the thing that decides whether the
+        // dispatched agent can touch the workspace at all — and because the
+        // workbench will not change it: DSH keeps it as a global setting.
+        const sandboxOptions = Array.isArray(sandbox?.options) ? sandbox.options : []
+        const effectiveSandbox = sandboxOptions.find((option) => option.value === sandbox?.effective)
+        sessionControls.push(
+          h(
+            'span',
+            { key: 'sandbox', className: 'dw-sandbox', title: sandbox?.error ?? t('dispatchSandboxHint'), style: { display: 'flex', alignItems: 'center', gap: 5 } },
+            h('span', { style: { ...S.muted, fontSize: 10.5 } }, t('dispatchSandbox')),
+            h(
+              'span',
+              { className: 'dw-sandbox-value', style: { fontSize: 10.5, fontWeight: 600 } },
+              sandbox === null ? t('loading') : sandboxLabel(sandbox?.effective, t, effectiveSandbox?.name),
+            ),
+          ),
+        )
+        // Visible, not a tooltip: the point is that the user knows before sending.
+        sessionControls.push(
+          h(
+            'span',
+            { key: 'sandbox-hint', className: 'dw-sandbox-hint', style: { flexBasis: '100%', fontSize: 10.5, color: 'var(--dsw-alias-label-secondary)', marginTop: 2 } },
+            t('dispatchSandboxHint'),
+          ),
+        )
         sessionControls.push(
           h(
             'span',
@@ -2185,7 +2244,25 @@ window.__ModuleLoader__.load({
       const [settings, setSettings] = useState(currentSettings())
       const [presets, setPresets] = useState([])
       const [presetsError, setPresetsError] = useState(null)
+      const [sandbox, setSandbox] = useState(null)
       const [preset, setPreset] = useState(() => currentSettings()?.dispatchPreset ?? '')
+
+      // The sandbox mode a new session will run in, so the user can see it before
+      // sending instead of discovering it when the agent cannot write anything.
+      useEffect(() => {
+        let cancelled = false
+        if (typeof props?.readSandbox !== 'function') return undefined
+        props.readSandbox()
+          .then((next) => {
+            if (!cancelled) setSandbox(next ?? null)
+          })
+          .catch((nextError) => {
+            if (!cancelled) setSandbox({ options: [], effective: null, error: String(nextError?.message ?? nextError) })
+          })
+        return () => {
+          cancelled = true
+        }
+      }, [props])
 
       useEffect(() => {
         loadSettings()
@@ -2616,6 +2693,7 @@ window.__ModuleLoader__.load({
                 presets,
                 preset,
                 presetsError,
+                sandbox,
                 busy: dispatchBusy,
                 error: dispatchError,
                 notice: dispatchNotice,
@@ -2743,6 +2821,33 @@ window.__ModuleLoader__.load({
                 const result = await ctx.remote.session.create(request)
                 if (result?.ok !== true) throw new Error(describeRemoteFailure(result, 'could not create a session'))
                 return result.value.sessionId
+              },
+              /**
+               * The sandbox mode a newly created session will run in.
+               *
+               * This is a *different axis* from the agent preset: the preset picks
+               * what the agent may use, the sandbox mode picks what its tools may
+               * touch. It is not part of `session.create` at all — DSH keeps it as
+               * a global setting (`permissionPresets/catalog.defaultPreset`) that
+               * applies to sessions created afterwards, which is exactly what a
+               * dispatch is. The workbench therefore shows it rather than choosing
+               * it: changing it would silently change every later session too.
+               */
+              readSandbox: async () => {
+                try {
+                  const result = await ctx.remote.permissionPresets.catalog()
+                  if (result?.ok !== true) {
+                    return { options: [], effective: null, error: describeRemoteFailure(result, 'could not read the sandbox catalog') }
+                  }
+                  const options = Array.isArray(result.value?.defaultOptions) ? result.value.defaultOptions : []
+                  return {
+                    options: options.map((option) => ({ value: option.value, name: option.name })),
+                    effective: result.value?.defaultPreset ?? null,
+                    error: null,
+                  }
+                } catch (error) {
+                  return { options: [], effective: null, error: String(error?.message ?? error) }
+                }
               },
               listPresets: async () => {
                 // `agentPresets/list` declares no parameters and **throws** when
@@ -2925,6 +3030,7 @@ window.__ModuleLoader__.load({
       SETTINGS_FALLBACK,
       STYLE_TEXT,
       STYLE_ID,
+      sandboxLabel,
       shortSessionId,
       describeRemoteFailure,
       StagePipeline,
