@@ -170,6 +170,13 @@ check('main key matches the panel id', mainRow?.options.key === 'developer-workb
 check('main registers a component', mainRow?.component !== undefined)
 check('uses declaration-aware slots.inject for both', client.slotPeeks.includes('sidebar.panellist') && client.slotPeeks.includes('main'))
 
+// Three additive session-side seats, all in slots the shell declares as "none" risk.
+const seatNames = ['conversation.composer.dock', 'conversation.chat.turnTail', 'sidebar.session.row.hover']
+check('registers all three session-side seats', seatNames.every((name) => client.slotRegistrations.some((row) => row.options.name === name)), JSON.stringify(client.slotRegistrations.map((row) => row.options.name)))
+check('session-side seats use declaration-aware inject too', seatNames.every((name) => client.slotPeeks.includes(name)), JSON.stringify(client.slotPeeks))
+check('session-side seats carry explicit ids and an order after the shipped entries', client.slotRegistrations.filter((row) => seatNames.includes(row.options.name)).every((row) => typeof row.options.id === 'string' && row.options.id.startsWith('developer-workbench.') && row.options.order === 100))
+check('session-side seats declare the locale namespace', client.slotRegistrations.filter((row) => seatNames.includes(row.options.name)).every((row) => row.options.locale === client.plugin.NS), `NS=${client.plugin.NS}`)
+
 const icon = panelRow?.component?.({ size: 16, active: true })
 check('icon renders a sized glyph', icon !== undefined && icon.props?.width === 16)
 
@@ -609,6 +616,62 @@ const unreadableText = renderText(seam.SkillGrid({
 })).join(' | ')
 check('self-check: an unreadable catalog says so instead of claiming absence', unreadableText.includes('读不到 DSH 的技能目录'))
 check('self-check: unreadable rows are chipped unknown, never missing', unreadableText.includes('unknown') && unreadableText.includes('not-discovered') === false)
+
+// Session-side surfaces. The load-bearing claim is the negative one: a session
+// bound to no registered project must leave the official UI untouched.
+const boundProject = {
+  key: 'a',
+  workspaceId: 'ws-a',
+  title: 'Developer Workbench',
+  path: '/tmp/a',
+  directoryStatus: 'ok',
+  sessionCount: 2,
+  sessionIds: ['session-1', 'session-2'],
+  stage: { id: 'implement', overridden: false },
+  tracker: { kind: 'github', label: 'GitHub Issues', source: 'project-declaration' },
+  git: { ok: true, isRepo: true, branch: 'main', dirtyCount: 0 },
+}
+
+const barText = renderText(seam.SessionProjectBar({ project: boundProject, stage: 'implement', t: zhT, onAdvance: () => {} })).join(' | ')
+check('session bar: shows the project and its current stage', barText.includes('Developer Workbench') && barText.includes('实现'), barText)
+check('session bar: offers the advance action', barText.includes('推进'))
+check('session bar: renders nothing for an unbound session', seam.SessionProjectBar({ project: null, t: zhT }) === null)
+check('session bar: an unknown stage still names the project', renderText(seam.SessionProjectBar({ project: boundProject, stage: null, t: zhT })).join(' ').includes('Developer Workbench'))
+
+const tailText = renderText(seam.TurnTailActions({ project: boundProject, t: zhT, onRecord: () => {}, onAdvance: () => {}, onHandoff: () => {} })).join(' | ')
+check('turn tail: offers record, advance and handoff', tailText.includes('记录到工作台') && tailText.includes('推进到下一阶段') && tailText.includes('生成交接文档'), tailText)
+check('turn tail: renders nothing for an unbound session', seam.TurnTailActions({ project: null, t: zhT }) === null)
+
+const hoverText = renderText(seam.SessionHoverLine({ project: boundProject, stage: 'implement', t: zhT })).join(' | ')
+check('hover line: shows the project and its stage', hoverText.includes('项目') && hoverText.includes('Developer Workbench · 实现'), hoverText)
+check('hover line: renders nothing for an unbound session', seam.SessionHoverLine({ project: null, t: zhT }) === null)
+
+// Actions must route to the one confirmation, never dispatch on their own.
+const intercepted = []
+const unsubscribe = seam.subscribeFocus((intent) => intercepted.push(intent))
+seam.requestFocus({ kind: 'advance', path: '/tmp/a', title: 'Demo' })
+unsubscribe()
+seam.requestFocus({ kind: 'handoff', path: '/tmp/a', title: 'Demo' })
+check('focus intent: subscribers receive the request', intercepted.length === 1 && intercepted[0].kind === 'advance', JSON.stringify(intercepted))
+check('focus intent: unsubscribing stops delivery', intercepted.length === 1, JSON.stringify(intercepted))
+
+const focusBannerText = renderText(seam.FocusBanner({ focus: { kind: 'handoff', title: 'Demo' }, t: zhT, onDismiss: () => {} })).join(' | ')
+check('focus banner: names the incoming request', focusBannerText.includes('生成交接文档') && focusBannerText.includes('Demo'))
+check('focus banner: says the workbench will not send it for you', focusBannerText.includes('工作台不会替你发送'))
+check('focus banner: renders nothing without a request', seam.FocusBanner({ focus: null, t: zhT }) === null)
+
+const unsubBroken = seam.subscribeFocus(() => {
+  throw new Error('bad listener')
+})
+let survived = false
+try {
+  seam.requestFocus({ kind: 'advance', title: 'x' })
+  survived = true
+} catch (error) {
+  survived = false
+}
+unsubBroken()
+check('focus intent: a broken listener cannot break the click', survived === true)
 
 // Both dictionaries must define the same keys, or one language renders raw keys.
 const zhKeys = Object.keys(seam.dicts.zh).sort()

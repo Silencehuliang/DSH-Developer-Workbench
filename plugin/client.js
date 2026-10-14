@@ -106,6 +106,16 @@ window.__ModuleLoader__.load({
       dispatchFailed: '派发失败：{reason}',
       dispatchBlocked: '这张单还有未解除的阻塞：{ids}',
       dispatchPickSession: '先选一个会话',
+      sessionProject: '项目',
+      sessionAdvance: '推进',
+      sessionAdvanceNext: '推进到下一阶段…',
+      sessionRecord: '记录到工作台',
+      sessionHandoff: '生成交接文档',
+      sessionFocusAdvance: '会话请求：推进「{title}」',
+      sessionFocusHandoff: '会话请求：为「{title}」生成交接文档',
+      sessionFocusRecord: '会话请求：把「{title}」记到工作台',
+      sessionFocusHint: '请在下面的流水线上按「派发」确认要发送的内容 —— 工作台不会替你发送。',
+      sessionFocusDismiss: '知道了',
       board: '工单看板',
       boardNeedsTracker: '这个项目的 tracker 还没定。先绑定项目并选择 tracker，看板才有东西可读。',
       boardUnsupported: '还没有 {kind} tracker 的适配器，所以这里不显示任何工单。',
@@ -218,6 +228,16 @@ window.__ModuleLoader__.load({
       dispatchFailed: 'Dispatch failed: {reason}',
       dispatchBlocked: 'This ticket still has unresolved blockers: {ids}',
       dispatchPickSession: 'Pick a session first',
+      sessionProject: 'Project',
+      sessionAdvance: 'Advance',
+      sessionAdvanceNext: 'Advance to the next stage…',
+      sessionRecord: 'Record in the workbench',
+      sessionHandoff: 'Write a handoff document',
+      sessionFocusAdvance: 'From a session: advance {title}',
+      sessionFocusHandoff: 'From a session: write a handoff document for {title}',
+      sessionFocusRecord: 'From a session: record {title} in the workbench',
+      sessionFocusHint: 'Press Dispatch on the pipeline below to confirm what gets sent — the workbench will not send it for you.',
+      sessionFocusDismiss: 'Got it',
       board: 'Ticket board',
       boardNeedsTracker: 'This project has no tracker yet. Bind it and pick a tracker before the board can read anything.',
       boardUnsupported: 'There is no adapter for a {kind} tracker yet, so no tickets are shown.',
@@ -357,6 +377,75 @@ window.__ModuleLoader__.load({
       }
       if (!response.ok) throw new Error(parsed?.error ?? `${url} → HTTP ${response.status}`)
       return parsed
+    }
+
+    /**
+     * One overview request shared by every session-side surface.
+     *
+     * Three independently-mounted surfaces each need "which project owns this
+     * session", and asking the host three times per session row is exactly the
+     * kind of cost that makes a small feature feel heavy.
+     */
+    let overviewCache = { at: 0, promise: null }
+    const OVERVIEW_CACHE_MS = 5000
+
+    /**
+     * Load the project overview, coalescing concurrent callers.
+     * @returns the overview, or null when it could not be read.
+     */
+    function loadOverview() {
+      const now = Date.now()
+      if (overviewCache.promise !== null && now - overviewCache.at < OVERVIEW_CACHE_MS) return overviewCache.promise
+      overviewCache = { at: now, promise: getJson(`${ROUTE_BASE}/overview`).catch(() => null) }
+      return overviewCache.promise
+    }
+
+    /**
+     * The project a session belongs to, or null when it belongs to none.
+     * @param sessionId - the session to resolve.
+     * @returns the project row, or null.
+     */
+    async function findProjectForSession(sessionId) {
+      if (typeof sessionId !== 'string' || sessionId.length === 0) return null
+      const overview = await loadOverview()
+      const projects = Array.isArray(overview?.projects) ? overview.projects : []
+      return projects.find((row) => Array.isArray(row.sessionIds) && row.sessionIds.includes(sessionId)) ?? null
+    }
+
+    /**
+     * Cross-surface intent: a session-side action asks the main panel to focus.
+     *
+     * The session-side surfaces deliberately do not dispatch anything themselves.
+     * They land the user on the one place that confirms before sending, because
+     * two send paths would mean two chances to send something unreviewed.
+     */
+    const focusIntent = { value: null, listeners: new Set() }
+
+    /**
+     * Publish a focus request.
+     * @param intent - `{ kind, path, title }`.
+     */
+    function requestFocus(intent) {
+      focusIntent.value = intent
+      for (const listener of Array.from(focusIntent.listeners)) {
+        try {
+          listener(intent)
+        } catch (error) {
+          // One bad listener must not break the user's click.
+        }
+      }
+    }
+
+    /**
+     * Observe focus requests.
+     * @param listener - called with each new intent.
+     * @returns an unsubscribe function.
+     */
+    function subscribeFocus(listener) {
+      focusIntent.listeners.add(listener)
+      return () => {
+        focusIntent.listeners.delete(listener)
+      }
     }
 
     /**
@@ -1479,6 +1568,130 @@ window.__ModuleLoader__.load({
       return h('div', { className: 'dw-dispatch', style: { ...S.card, borderColor: 'var(--dsw-alias-brand-primary)' } }, rows)
     }
 
+    // ── session-side surfaces ────────────────────────────────────────────────
+    //
+    // Three additive seats in the official UI. None of them reaches into an
+    // official control: each renders its own row or returns null, and all three
+    // return null for a session that belongs to no registered project — so an
+    // ordinary conversation is left exactly as DSH shipped it.
+
+    /** Ambient bar under the composer card. */
+    function SessionProjectBar(props) {
+      const { project, stage, t, onAdvance, busy } = props
+      if (project === null || project === undefined) return null
+      return h(
+        'div',
+        {
+          className: 'dw-session-bar',
+          style: {
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            marginTop: 6,
+            padding: '5px 10px',
+            borderRadius: 8,
+            border: '1px solid var(--dsw-alias-border-l1)',
+            background: 'var(--dsw-alias-bg-layer-2)',
+            fontSize: 12,
+          },
+        },
+        h('span', { style: { fontSize: 12.4, fontWeight: 600, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, project.title),
+        stage === null || stage === undefined
+          ? h('span', { style: { ...S.chip, color: 'var(--dsw-alias-label-secondary)' } }, t('stageUnknown'))
+          : h('span', { style: { ...S.chip, color: 'var(--dsw-alias-brand-primary)', borderColor: 'var(--dsw-alias-brand-primary)' } }, stageLabel(stage, t)),
+        h(
+          'button',
+          {
+            type: 'button',
+            className: 'dw-session-advance',
+            style: { ...S.button, marginLeft: 'auto', padding: '3px 10px', fontSize: 11.5 },
+            disabled: busy === true,
+            onClick: () => onAdvance?.(project),
+          },
+          t('sessionAdvance'),
+        ),
+      )
+    }
+
+    /** The three actions shown after a completed turn. */
+    function TurnTailActions(props) {
+      const { project, t, onRecord, onAdvance, onHandoff, busy } = props
+      if (project === null || project === undefined) return null
+      return h(
+        'div',
+        { className: 'dw-turn-tail', style: { display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 } },
+        h('button', { type: 'button', className: 'dw-turn-record', style: { ...S.button, padding: '3px 10px', fontSize: 11.5 }, disabled: busy === true, onClick: () => onRecord?.(project) }, t('sessionRecord')),
+        h('button', { type: 'button', className: 'dw-turn-advance', style: { ...S.buttonPrimary, padding: '3px 10px', fontSize: 11.5 }, disabled: busy === true, onClick: () => onAdvance?.(project) }, t('sessionAdvanceNext')),
+        h('button', { type: 'button', className: 'dw-turn-handoff', style: { ...S.button, padding: '3px 10px', fontSize: 11.5 }, disabled: busy === true, onClick: () => onHandoff?.(project) }, t('sessionHandoff')),
+      )
+    }
+
+    /** One informational line in a session row's hover card. */
+    function SessionHoverLine(props) {
+      const { project, stage, t } = props
+      if (project === null || project === undefined) return null
+      return h(
+        'div',
+        {
+          className: 'dw-hover-line',
+          style: { display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 11, color: 'var(--dsw-alias-label-secondary)', padding: '2px 0' },
+        },
+        h('span', null, t('sessionProject')),
+        h(
+          'span',
+          { style: { color: 'var(--dsw-alias-brand-primary)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+          stage === null || stage === undefined ? project.title : `${project.title} · ${stageLabel(stage, t)}`,
+        ),
+      )
+    }
+
+    /** Banner in the workbench explaining why a session-side action landed here. */
+    function FocusBanner(props) {
+      const { focus, t, onDismiss } = props
+      if (focus === null || focus === undefined) return null
+      const key = focus.kind === 'handoff' ? 'sessionFocusHandoff' : focus.kind === 'record' ? 'sessionFocusRecord' : 'sessionFocusAdvance'
+      return h(
+        'div',
+        { className: 'dw-focus-banner', style: { ...S.banner, borderLeftColor: 'var(--dsw-alias-brand-primary)' } },
+        h('div', { style: S.bannerTitle }, t(key, { title: focus.title ?? '—' })),
+        h('p', { style: S.bannerBody }, t('sessionFocusHint')),
+        h('button', { type: 'button', className: 'dw-focus-dismiss', style: { ...S.button, marginTop: 8 }, onClick: onDismiss }, t('sessionFocusDismiss')),
+      )
+    }
+
+    /**
+     * Wrap a pure session-side surface with project resolution.
+     *
+     * The wrapper owns the only async step and renders nothing until it settles,
+     * so a session bound to no registered project never leaves a placeholder in
+     * the DOM — and never flickers one in.
+     *
+     * @param Component - the pure surface to render.
+     * @param mapProps - builds that surface's props from the resolved project.
+     * @returns a slot occupant.
+     */
+    function makeSessionSurface(Component, mapProps) {
+      return function SessionSurface(props) {
+        const { sessionId } = props
+        const [project, setProject] = useState(null)
+        useEffect(() => {
+          let cancelled = false
+          findProjectForSession(sessionId)
+            .then((found) => {
+              if (!cancelled) setProject(found)
+            })
+            .catch(() => {
+              if (!cancelled) setProject(null)
+            })
+          return () => {
+            cancelled = true
+          }
+        }, [sessionId])
+        if (project === null || project === undefined) return null
+        return h(Component, { ...props, ...mapProps(project, props) })
+      }
+    }
+
     // ── container ────────────────────────────────────────────────────────────
 
     /**
@@ -1508,6 +1721,10 @@ window.__ModuleLoader__.load({
       const [dispatchBusy, setDispatchBusy] = useState(false)
       const [dispatchError, setDispatchError] = useState(null)
       const [dispatchNotice, setDispatchNotice] = useState(null)
+      const [focus, setFocus] = useState(null)
+
+      // A session-side action lands the user here; the banner says why.
+      useEffect(() => subscribeFocus(setFocus), [])
 
       useEffect(() => {
         let cancelled = false
@@ -1846,6 +2063,7 @@ window.__ModuleLoader__.load({
               : h(
                   'div',
                   null,
+                  h(FocusBanner, { focus, t, onDismiss: () => setFocus(null) }),
                   h(StagePanel, {
                     t,
                     project: activeProject,
@@ -1902,6 +2120,7 @@ window.__ModuleLoader__.load({
       const t = ctx.locale.bind(NS)
 
       const workspaceNavigation = ctx.get('uiWorkspace')
+      const layout = ctx.get('layout')
 
       // The icon row. `inject` is declaration-aware, so this activates whether
       // this plugin loads before or after the sidebar that declares the slot.
@@ -1976,6 +2195,53 @@ window.__ModuleLoader__.load({
           WorkbenchPage,
         ),
       )
+
+      // Three additive session-side seats. Each shows state and hands the user to
+      // the one surface that confirms before sending; none of them dispatches, so
+      // there is exactly one send path to review.
+      const focusOn = (kind) => (project) => {
+        requestFocus({ kind, path: project?.path ?? null, title: project?.title ?? null })
+        try {
+          layout?.selectPanel(PANEL_ID)
+        } catch (error) {
+          // A missing main panel must not turn a click into an exception.
+        }
+      }
+
+      const SessionBarSurface = makeSessionSurface(SessionProjectBar, (project) => ({
+        project,
+        stage: project.stage?.id ?? null,
+        onAdvance: focusOn('advance'),
+      }))
+      const TurnTailSurface = makeSessionSurface(TurnTailActions, (project) => ({
+        project,
+        onRecord: focusOn('record'),
+        onAdvance: focusOn('advance'),
+        onHandoff: focusOn('handoff'),
+      }))
+      const HoverSurface = makeSessionSurface(SessionHoverLine, (project) => ({
+        project,
+        stage: project.stage?.id ?? null,
+      }))
+
+      ctx.slots.inject('conversation.composer.dock', () =>
+        ctx.slots.register(
+          { name: 'conversation.composer.dock', id: 'developer-workbench.bar', order: 100, locale: NS },
+          SessionBarSurface,
+        ),
+      )
+      ctx.slots.inject('conversation.chat.turnTail', () =>
+        ctx.slots.register(
+          { name: 'conversation.chat.turnTail', id: 'developer-workbench.turnTail', order: 100, locale: NS },
+          TurnTailSurface,
+        ),
+      )
+      ctx.slots.inject('sidebar.session.row.hover', () =>
+        ctx.slots.register(
+          { name: 'sidebar.session.row.hover', id: 'developer-workbench.hover', order: 100, locale: NS },
+          HoverSurface,
+        ),
+      )
     }
 
     exports.apply = apply
@@ -1997,6 +2263,15 @@ window.__ModuleLoader__.load({
       TicketCard,
       DispatchDialog,
       performDispatch,
+      SessionProjectBar,
+      TurnTailActions,
+      SessionHoverLine,
+      FocusBanner,
+      makeSessionSurface,
+      findProjectForSession,
+      loadOverview,
+      requestFocus,
+      subscribeFocus,
       shortSessionId,
       describeRemoteFailure,
       StagePanel,

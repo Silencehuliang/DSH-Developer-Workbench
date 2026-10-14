@@ -16,6 +16,9 @@ import { gitOverview } from './git.js'
 import { projectKey } from './state.js'
 import { declarationPath, resolveTracker } from './tracker.js'
 
+/** Largest number of session ids one project row carries. */
+const SESSION_ID_LIMIT = 200
+
 /**
  * Project a live workspace into the shape the left column renders.
  *
@@ -45,6 +48,12 @@ export async function describeProject({ workspace, state }) {
     /** `missing-dir` means the workspace outlives its directory. */
     directoryStatus,
     sessionCount: workspace.sessionIds.length,
+    /**
+     * The session ids themselves, so a session-side surface can resolve its
+     * project from the overview it already has instead of asking again.
+     * Capped: this is a projection, not a ledger.
+     */
+    sessionIds: workspace.sessionIds.slice(0, SESSION_ID_LIMIT),
     git: gitOverview(workspace.path),
     tracker,
     /** The user's own decisions, kept separate from anything derived. */
