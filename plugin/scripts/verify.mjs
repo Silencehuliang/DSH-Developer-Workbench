@@ -38,8 +38,9 @@ import {
   readGitHubTickets,
 } from '../lib/tickets.js'
 import { STAGES, deriveStage } from '../lib/stage.js'
-import { PROMPT_STAGES, DEFAULT_TRIAGE_LABELS, buildDispatchPrompt, readTriageLabels } from '../lib/prompts.js'
+import { PROMPT_STAGES, DEFAULT_TRIAGE_LABELS, buildDispatchPrompt, findDispatchable, readTriageLabels } from '../lib/prompts.js'
 import { nextHandoffPath, projectSlug } from '../lib/handoffs.js'
+import { PROMPT_LANGUAGES, SETTINGS_DEFAULTS, isSurfaceEnabled, normalizeSettings, resolvePromptLanguage } from '../lib/settings.js'
 import { readSkillInventory, reconcileSkills } from '../lib/skills.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -177,6 +178,13 @@ check('registers all three session-side seats', seatNames.every((name) => client
 check('session-side seats use declaration-aware inject too', seatNames.every((name) => client.slotPeeks.includes(name)), JSON.stringify(client.slotPeeks))
 check('session-side seats carry explicit ids and an order after the shipped entries', client.slotRegistrations.filter((row) => seatNames.includes(row.options.name)).every((row) => typeof row.options.id === 'string' && row.options.id.startsWith('developer-workbench.') && row.options.order === 100))
 check('session-side seats declare the locale namespace', client.slotRegistrations.filter((row) => seatNames.includes(row.options.name)).every((row) => row.options.locale === client.plugin.NS), `NS=${client.plugin.NS}`)
+
+const settingsSeat = client.slotRegistrations.find((row) => row.options.name === 'settings.section')
+check('registers a settings page in the shell\u2019s settings panel', settingsSeat !== undefined && settingsSeat.options.id === 'developer-workbench')
+check('settings page: sits after the shipped sections', settingsSeat?.options.order === 40, String(settingsSeat?.options.order))
+check('settings page: declares a localized label thunk', typeof settingsSeat?.options.label === 'function')
+check('settings page: carries its own inject face', typeof settingsSeat?.options.inject === 'function')
+check('settings page: registered declaratively like the rest', client.slotPeeks.includes('settings.section'))
 
 const icon = panelRow?.component?.({ size: 16, active: true })
 check('icon renders a sized glyph', icon !== undefined && icon.props?.width === 16)
@@ -705,6 +713,48 @@ const resumeDialogText = renderText(
 ).join(' | ')
 check('dispatch: resuming says it will read the existing document', resumeDialogText.includes('suggested skills'))
 
+// The settings page, its switches, and the accessibility work behind it.
+const settingsText = renderText(seam.SettingsSection({ settings: seam.SETTINGS_FALLBACK, t: zhT, busy: false, error: null, notice: null, onChange: () => {} })).join(' | ')
+check('settings page: titles itself', settingsText.includes('开发工作台设置'))
+check('settings page: offers all three session-side switches', settingsText.includes('输入框下方显示') && settingsText.includes('每轮回答后显示') && settingsText.includes('会话悬停卡显示'), settingsText.slice(0, 200))
+check('settings page: offers the detour threshold', settingsText.includes('旁路建议阈值'))
+check('settings page: offers the prompt language with a follow-the-interface option', settingsText.includes('派发提示词语言') && settingsText.includes('跟随界面'))
+check('settings page: explains why there is no skills-install knob', settingsText.includes('没有「技能安装位置」这个设置'))
+check('settings page: a save failure is shown, not swallowed', renderText(seam.SettingsSection({ settings: seam.SETTINGS_FALLBACK, t: zhT, error: 'boom' })).join(' ').includes('boom'))
+check('settings page: a save is acknowledged', renderText(seam.SettingsSection({ settings: seam.SETTINGS_FALLBACK, t: zhT, notice: '已保存' })).join(' ').includes('已保存'))
+
+const settingsNode = seam.SettingsSection({ settings: { ...seam.SETTINGS_FALLBACK, sessionHover: false }, t: zhT, onChange: () => {} })
+const switches = findNodes(settingsNode, 'input').filter((element) => element.props?.type === 'checkbox')
+check('settings page: the switches are real checkboxes, so they are keyboard reachable', switches.length === 3, String(switches.length))
+check('settings page: a switch reflects the stored value', switches.find((element) => element.props.className === 'dw-setting-sessionHover')?.props.checked === false)
+check('settings page: the threshold is a number input', findNodes(settingsNode, 'input').some((element) => element.props?.type === 'number'))
+check('settings page: the language control is a real select with three options', findNodes(settingsNode, 'select').length === 1 && findNodes(settingsNode, 'option').length === 3)
+
+check('settings: the client fallback matches the host defaults exactly', JSON.stringify(seam.SETTINGS_FALLBACK) === JSON.stringify(SETTINGS_DEFAULTS), JSON.stringify(seam.SETTINGS_FALLBACK))
+check('settings: a surface gate follows the stored switch', seam.surfaceEnabled('hover', { ...seam.SETTINGS_FALLBACK, sessionHover: false }) === false)
+check('settings: a surface gate is on before settings load', seam.surfaceEnabled('bar', null) === true)
+check('settings: an unknown surface key is never gated off by accident', seam.surfaceEnabled('mystery', { ...seam.SETTINGS_FALLBACK, sessionBar: false }) === true)
+
+const seenSettings = []
+const unsubscribeSettings = seam.subscribeSettings((next) => seenSettings.push(next))
+seam.applySettings({ ...seam.SETTINGS_FALLBACK, sessionBar: false })
+unsubscribeSettings()
+seam.applySettings({ ...seam.SETTINGS_FALLBACK, sessionBar: true })
+check('settings: a change reaches every subscriber, which is what makes it immediate', seenSettings.length === 1 && seenSettings[0].sessionBar === false, JSON.stringify(seenSettings))
+check('settings: unsubscribing stops delivery', seenSettings.length === 1)
+check('settings: the cache holds the last published value', seam.currentSettings().sessionBar === true)
+
+// Accessibility: focus must be visible, and no colour may be pinned to a scheme.
+check('styles: every interactive control can show focus', /:focus-visible/.test(seam.STYLE_TEXT))
+check('styles: focus is drawn with a theme token, not a literal colour', /outline:[^;]*var\(--dsw-alias-/.test(seam.STYLE_TEXT))
+check('styles: no hardcoded colour anywhere in the sheet', /#[0-9a-fA-F]{3,8}\b/.test(seam.STYLE_TEXT) === false && /rgb\(/i.test(seam.STYLE_TEXT) === false, 'a literal colour was found')
+check('styles: the sheet is injected under a stable id so it is applied once', seam.STYLE_ID === 'developer-workbench-styles')
+
+check('interface language: an English interface asks for English prompts', seam.interfaceLanguage({ getSnapshot: () => ({ active: 'en-US' }) }) === 'en')
+check('interface language: a Chinese interface asks for Chinese prompts', seam.interfaceLanguage({ getSnapshot: () => ({ active: 'zh-CN' }) }) === 'zh')
+check('interface language: an unreadable locale falls back to Chinese', seam.interfaceLanguage({}) === 'zh' && seam.interfaceLanguage(undefined) === 'zh')
+check('interface language: a throwing locale service cannot break dispatch', seam.interfaceLanguage({ getSnapshot: () => { throw new Error('nope') } }) === 'zh')
+
 // Both dictionaries must define the same keys, or one language renders raw keys.
 const zhKeys = Object.keys(seam.dicts.zh).sort()
 const enKeys = Object.keys(seam.dicts.en).sort()
@@ -1031,6 +1081,49 @@ check('resume prompt: points at the handoff document', resumePrompt.text.include
 check('resume prompt: tells the agent to follow the document\u2019s suggested skills', resumePrompt.text.includes('suggested skills'))
 check('resume prompt: a missing document is called out rather than glossed over', resumePrompt.text.includes('已经不存在'))
 check('dispatch ids: handoff and resume are dispatchable without being pipeline stages', PROMPT_STAGES.includes('handoff') && PROMPT_STAGES.includes('resume') && !STAGES.some((entry) => entry.id === 'handoff'))
+
+// ── 1h. settings, and prompts that follow the interface language ─────────────
+
+console.log('\nsettings and prompt language (hermetic)')
+
+check('settings: defaults are complete', Object.keys(SETTINGS_DEFAULTS).length === 5 && SETTINGS_DEFAULTS.promptLanguage === 'auto' && SETTINGS_DEFAULTS.wayfinderThreshold === 12)
+const normalisedDefaults = normalizeSettings(null)
+check('settings: nothing stored means the defaults', JSON.stringify(normalisedDefaults) === JSON.stringify(SETTINGS_DEFAULTS), JSON.stringify(normalisedDefaults))
+check('settings: an unknown field is dropped rather than stored', !('nonsense' in normalizeSettings({ nonsense: 1 })))
+check('settings: a non-boolean switch falls back to its default', normalizeSettings({ sessionBar: 'yes' }).sessionBar === true)
+check('settings: an out-of-range threshold falls back to its default', normalizeSettings({ wayfinderThreshold: 9999 }).wayfinderThreshold === 12)
+check('settings: an unknown prompt language falls back to auto', normalizeSettings({ promptLanguage: 'klingon' }).promptLanguage === 'auto')
+check('settings: accepted values are kept', normalizeSettings({ sessionHover: false, wayfinderThreshold: 3, promptLanguage: 'en' }).sessionHover === false)
+check('settings: normalising never mutates the defaults object', SETTINGS_DEFAULTS.sessionHover === true)
+check('prompt language: a pinned language beats the interface', resolvePromptLanguage('en', 'zh') === 'en' && resolvePromptLanguage('zh', 'en') === 'zh')
+check('prompt language: auto follows the interface', resolvePromptLanguage('auto', 'en') === 'en')
+check('prompt language: auto with nothing known falls back to zh', resolvePromptLanguage('auto', undefined) === 'zh' && resolvePromptLanguage('auto', 'fr') === 'zh')
+check('surface switches: on by default', isSurfaceEnabled('bar', SETTINGS_DEFAULTS) && isSurfaceEnabled('turnTail', SETTINGS_DEFAULTS) && isSurfaceEnabled('hover', SETTINGS_DEFAULTS))
+check('surface switches: off when switched off', isSurfaceEnabled('hover', { ...SETTINGS_DEFAULTS, sessionHover: false }) === false)
+check('surface switches: an unknown key is never disabled by accident', isSurfaceEnabled('mystery', { ...SETTINGS_DEFAULTS, sessionBar: false }) === true)
+
+// The criterion the ticket appended: both languages must keep the coordinates.
+const zhPrompt = buildDispatchPrompt({ stage: stageEntry.get('tickets'), skillsDir: BUNDLED_SKILLS, tracker: { kind: 'github' }, repository: { owner: 'o', repo: 'r' }, project: { title: 'Demo', path: '/tmp/demo' }, lang: 'zh' })
+const enPrompt = buildDispatchPrompt({ stage: stageEntry.get('tickets'), skillsDir: BUNDLED_SKILLS, tracker: { kind: 'github' }, repository: { owner: 'o', repo: 'r' }, project: { title: 'Demo', path: '/tmp/demo' }, lang: 'en' })
+check('prompt language: zh carries the skill path', zhPrompt.text.includes(asPosix(zhPrompt.skillPath)))
+check('prompt language: en carries the same skill path', enPrompt.text.includes(asPosix(enPrompt.skillPath)))
+check('prompt language: the two languages really differ', zhPrompt.text !== enPrompt.text)
+check('prompt language: zh text is Chinese', /[\u4e00-\u9fa5]/.test(zhPrompt.text))
+check('prompt language: en text carries no Chinese at all', /[\u4e00-\u9fa5]/.test(enPrompt.text) === false, enPrompt.text.slice(0, 200))
+check('prompt language: en still names the tracker and its repository', enPrompt.text.includes('GitHub Issues') && enPrompt.text.includes('o/r'))
+check('prompt language: en still lists the triage vocabulary', DEFAULT_TRIAGE_LABELS.every((label) => enPrompt.text.includes(label)))
+check('prompt language: the response records which language was used', enPrompt.lang === 'en' && zhPrompt.lang === 'zh')
+
+// Every dispatchable id must survive translation with its coordinates intact.
+const bothLanguagesComplete = PROMPT_STAGES.every((id) => {
+  const entry = findDispatchable(id)
+  const built = buildDispatchPrompt({ stage: entry, skillsDir: BUNDLED_SKILLS, tracker: { kind: 'local-markdown' }, project: { title: 'D', path: '/tmp/d' }, lang: 'en' })
+  const carriesSkill = built.skillPath === null
+    ? built.text.includes('No skill needs loading')
+    : built.text.includes(asPosix(built.skillPath))
+  return carriesSkill && built.text.includes('Tracker: local markdown') && built.text.length > 40
+})
+check('prompt language: every dispatchable step builds in English too', bothLanguagesComplete)
 
 // ── 2. host routes ────────────────────────────────────────────────────────────
 
@@ -1433,6 +1526,37 @@ if (CLIENT_ONLY) {
     const forgotten = await postJson('/api/developer-workbench/projects/handoff', { path: handoffProject, handoffPath: handoffFile, forget: true })
     check('handoff record: forgetting drops the entry rather than leaving a dead link', forgotten.status === 200 && !forgotten.body.handoffs.some((row) => row.path === handoffFile), `HTTP ${forgotten.status}`)
     fs.rmSync(path.dirname(handoffFile), { recursive: true, force: true })
+
+    // ── settings: read, write, reject, and restore ───────────────────────────
+    const settingsUrl = '/api/developer-workbench/settings'
+    const initialSettings = await getJson(settingsUrl)
+    check('settings route: reports a complete settings object', initialSettings.settings?.promptLanguage !== undefined && initialSettings.defaults !== undefined && Array.isArray(initialSettings.languages))
+    check('settings route: a profile that never wrote settings uses the defaults', JSON.stringify(initialSettings.settings) === JSON.stringify(SETTINGS_DEFAULTS), JSON.stringify(initialSettings.settings))
+
+    const written = await postJson(settingsUrl, { sessionHover: false, wayfinderThreshold: 3, promptLanguage: 'en' })
+    check('settings route: accepted values are stored', written.status === 200 && written.body.settings.sessionHover === false && written.body.settings.wayfinderThreshold === 3 && written.body.settings.promptLanguage === 'en', `HTTP ${written.status}`)
+    const reread = await getJson(settingsUrl)
+    check('settings route: the change is visible on the very next read, with no restart', reread.settings.sessionHover === false && reread.settings.wayfinderThreshold === 3, JSON.stringify(reread.settings))
+    const persistedSettings = JSON.parse(fs.readFileSync(stateFile, 'utf8'))
+    check('settings route: settings are global, not per project', persistedSettings.settings?.sessionHover === false && Object.values(persistedSettings.projects).every((row) => row.sessionHover === undefined))
+
+    const rejectedSettings = await postJson(settingsUrl, { wayfinderThreshold: 5000, promptLanguage: 'klingon', sessionBar: 'yes' })
+    check('settings route: rejected values fall back instead of being stored', rejectedSettings.body.settings.wayfinderThreshold === 12 && rejectedSettings.body.settings.promptLanguage === 'auto' && rejectedSettings.body.settings.sessionBar === true, JSON.stringify(rejectedSettings.body.settings))
+
+    // A pinned language must beat the interface asking for the other one.
+    const pinnedEnglishWhileZh = await getJson(`${promptUrl(stageProject, 'tickets')}&lang=zh`)
+    check('settings route: auto is in force again after the rejection', /[\u4e00-\u9fa5]/.test(pinnedEnglishWhileZh.text) === true, pinnedEnglishWhileZh.text.slice(0, 80))
+    await postJson(settingsUrl, { promptLanguage: 'en' })
+    const pinnedOverRequest = await getJson(`${promptUrl(stageProject, 'tickets')}&lang=zh`)
+    check('settings route: a pinned prompt language beats the requested locale', /[\u4e00-\u9fa5]/.test(pinnedOverRequest.text) === false, pinnedOverRequest.text.slice(0, 80))
+    await postJson(settingsUrl, { promptLanguage: 'auto' })
+    const englishPrompt = await getJson(`${promptUrl(stageProject, 'tickets')}&lang=en`)
+    check('settings route: an English request yields an English prompt that keeps its coordinates', /[\u4e00-\u9fa5]/.test(englishPrompt.text) === false && englishPrompt.text.includes(asPosix(englishPrompt.skillPath)), englishPrompt.text.slice(0, 120))
+    check('settings route: the response states which language was used', englishPrompt.lang === 'en')
+
+    // The suite writes to the real profile, so it puts the defaults back.
+    const restored = await postJson(settingsUrl, SETTINGS_DEFAULTS)
+    check('settings route: the suite restores the defaults it changed', JSON.stringify(restored.body.settings) === JSON.stringify(SETTINGS_DEFAULTS), JSON.stringify(restored.body.settings))
 
     // Live: this repository at implement, which must name a real startable ticket.
     const livePrompt = await getJson(promptUrl(path.resolve(HERE, '..', '..'), 'implement'))

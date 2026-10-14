@@ -16,6 +16,7 @@ import { readArtifactPreview, scanArtifacts } from './artifacts.js'
 import { nextHandoffPath } from './handoffs.js'
 import { describeProject, probeDirectory } from './projects.js'
 import { PROMPT_STAGES, buildDispatchPrompt, findDispatchable, readTriageLabels } from './prompts.js'
+import { PROMPT_LANGUAGES, SETTINGS_DEFAULTS, WAYFINDER_RANGE, normalizeSettings, resolvePromptLanguage } from './settings.js'
 import { STAGES, deriveStage } from './stage.js'
 import { analyseBoard, createCommandRunner, readGitHubTickets, readLocalTickets, resolveGitHubRepo } from './tickets.js'
 import { readSkillInventory, reconcileSkills } from './skills.js'
@@ -497,6 +498,8 @@ export function buildRoutes({ ctx, store, info, now = () => new Date(), run = cr
           reviewCount: Array.isArray(record?.reviews) ? record.reviews.length : 0,
           prCount: Array.isArray(record?.pullRequests) ? record.pullRequests.length : 0,
           override: record?.stageOverride ?? null,
+          // The bypass threshold is a setting, so it has to reach the derivation.
+          wayfinderThreshold: normalizeSettings(store.settings()).wayfinderThreshold,
         })
 
         // Persist only on change: a poll must not rewrite the state file, and the
@@ -615,6 +618,9 @@ export function buildRoutes({ ctx, store, info, now = () => new Date(), run = cr
           ticket,
           triageLabels: readTriageLabels(resolved),
           handoffPath,
+          // The prompt follows the interface unless the user pinned a language —
+          // and the client reports its locale as `lang`.
+          lang: resolvePromptLanguage(normalizeSettings(store.settings()).promptLanguage, queryParam(req, 'lang')),
         })
 
         sendJson(res, 200, {
@@ -744,5 +750,39 @@ export function buildRoutes({ ctx, store, info, now = () => new Date(), run = cr
     },
   }
 
-  return [health, skills, skillStatus, overview, probe, artifacts, artifact, tickets, stage, prompt, bind, setTracker, setStage, handoffRecord, unbind]
+  const settings = {
+    kind: 'exact',
+    path: `${ROUTE_BASE}/settings`,
+    handler: async (req, res) => {
+      try {
+        if ((req.method ?? 'GET').toUpperCase() === 'GET') {
+          sendJson(res, 200, {
+            settings: normalizeSettings(store.settings()),
+            defaults: SETTINGS_DEFAULTS,
+            languages: PROMPT_LANGUAGES,
+            wayfinderRange: WAYFINDER_RANGE,
+          })
+          return
+        }
+
+        const body = await readJsonBody(req)
+        const accepted = {}
+        for (const key of ['sessionBar', 'turnTail', 'sessionHover']) {
+          if (typeof body[key] === 'boolean') accepted[key] = body[key]
+        }
+        if (Number.isInteger(body.wayfinderThreshold)) accepted.wayfinderThreshold = body.wayfinderThreshold
+        if (typeof body.promptLanguage === 'string') accepted.promptLanguage = body.promptLanguage
+
+        // Normalise the merged result, so a rejected value falls back to its
+        // default here rather than being stored and then misreported by the UI.
+        const next = normalizeSettings({ ...store.settings(), ...accepted })
+        store.saveSettings(next)
+        sendJson(res, 200, { settings: next })
+      } catch (error) {
+        fail(res, 500, error)
+      }
+    },
+  }
+
+  return [health, skills, skillStatus, overview, probe, artifacts, artifact, tickets, stage, prompt, settings, bind, setTracker, setStage, handoffRecord, unbind]
 }

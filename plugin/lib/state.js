@@ -41,7 +41,11 @@ function normalise(raw) {
   const projects = raw !== null && typeof raw === 'object' && raw.projects !== null && typeof raw.projects === 'object'
     ? raw.projects
     : {}
-  return { version: STATE_VERSION, projects }
+  // Settings are global, not per project: they describe the workbench itself.
+  const settings = raw !== null && typeof raw === 'object' && raw.settings !== null && typeof raw.settings === 'object'
+    ? raw.settings
+    : {}
+  return { version: STATE_VERSION, settings, projects }
 }
 
 /**
@@ -78,6 +82,21 @@ export function createStateStore(dir) {
   return {
     /** Absolute path of the backing file, for diagnostics. */
     file,
+    /** The stored global settings, as written. Normalising is the caller's job. */
+    settings() {
+      return { ...load().settings }
+    },
+    /**
+     * Merge a settings patch and persist it.
+     * @param patch - accepted settings fields.
+     * @returns the stored settings.
+     */
+    saveSettings(patch) {
+      const state = load()
+      state.settings = { ...state.settings, ...patch }
+      flush()
+      return { ...state.settings }
+    },
     /** Every project record, keyed by {@link projectKey}. */
     all() {
       return load().projects

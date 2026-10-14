@@ -121,6 +121,22 @@ window.__ModuleLoader__.load({
       handoffMissing: '文件不见了',
       handoffHint: '交接文档按上游 handoff 技能的约定写在系统临时目录里（不是工作区）。工作台会记住路径，所以「继续这个交接」能直接接上。',
       handoffPlanned: '将写入：{path}',
+      settingsTitle: '开发工作台设置',
+      settingsLead: '这些是工作台自己的偏好。改动立即生效，不用重启。',
+      settingSessionBar: '输入框下方显示「项目 · 阶段」',
+      settingSessionBarNote: '只在该会话属于已登记项目时出现。',
+      settingTurnTail: '每轮回答后显示推进动作',
+      settingTurnTailNote: '记录 / 推进 / 交接三个动作。',
+      settingSessionHover: '会话悬停卡显示项目',
+      settingSessionHoverNote: '一行「项目 · 阶段」，纯展示。',
+      settingThreshold: '旁路建议阈值',
+      settingThresholdNote: '开放工单达到这个数就建议走 wayfinder。',
+      settingPromptLanguage: '派发提示词语言',
+      settingPromptLanguageNote: '跟随界面，或固定为某种语言。',
+      settingLanguageAuto: '跟随界面',
+      settingsSkillsNote: '这里没有「技能安装位置」这个设置：技能由插件包直接供给，不写进你的项目 —— 旋钮如果控制不了任何东西，就不该出现在设置里。技能是否真的被 DSH 看到，看右栏的技能自检。',
+      settingsFailed: '保存失败',
+      settingsSaved: '已保存',
       dispatchHandoff: '交接文档',
       dispatchHandoffNew: '这次派发会把它写到上面这个路径 —— 系统临时目录，不是工作区。',
       dispatchHandoffResume: '将读取这份已有文档，按它列出的 suggested skills 继续。',
@@ -251,6 +267,22 @@ window.__ModuleLoader__.load({
       handoffMissing: 'file is gone',
       handoffHint: 'Handoff documents live in the OS temp directory by the upstream skill\u2019s design, not in the workspace. The workbench remembers the path, which is what makes "resume this handoff" possible.',
       handoffPlanned: 'will be written to: {path}',
+      settingsTitle: 'Developer Workbench settings',
+      settingsLead: 'Preferences for the workbench itself. Changes take effect immediately \u2014 no restart.',
+      settingSessionBar: 'Show project \u00b7 stage under the composer',
+      settingSessionBarNote: 'Only appears when the session belongs to a registered project.',
+      settingTurnTail: 'Show advance actions after each turn',
+      settingTurnTailNote: 'Record, advance, and handoff.',
+      settingSessionHover: 'Show the project in the session hover card',
+      settingSessionHoverNote: 'One informational line, nothing interactive.',
+      settingThreshold: 'Detour threshold',
+      settingThresholdNote: 'Open tickets at which wayfinder is suggested.',
+      settingPromptLanguage: 'Dispatch prompt language',
+      settingPromptLanguageNote: 'Follow the interface, or pin one language.',
+      settingLanguageAuto: 'Follow the interface',
+      settingsSkillsNote: 'There is no "skills install location" here: the skills are served straight from the plugin package and never written into your project, so such a knob would control nothing. Whether DSH actually sees them is what the skill self-check reports.',
+      settingsFailed: 'Could not save',
+      settingsSaved: 'Saved',
       dispatchHandoff: 'Handoff document',
       dispatchHandoffNew: 'This dispatch will write it to the path above — the OS temp directory, not the workspace.',
       dispatchHandoffResume: 'It will read this existing document and continue from the skills it suggests.',
@@ -462,6 +494,96 @@ window.__ModuleLoader__.load({
       return () => {
         focusIntent.listeners.delete(listener)
       }
+    }
+
+    /**
+     * The interface language, as a prompt language id.
+     * @param localeService - the `locale` client service.
+     * @returns `'zh'` or `'en'`.
+     */
+    function interfaceLanguage(localeService) {
+      try {
+        const snapshot = localeService?.getSnapshot?.() ?? localeService?.getLocale?.()
+        const active = String(snapshot?.active ?? '')
+        return active.toLowerCase().startsWith('en') ? 'en' : 'zh'
+      } catch (error) {
+        return 'zh'
+      }
+    }
+
+    /** Client-side defaults, mirroring `lib/settings.js`; the suite compares them. */
+    const SETTINGS_FALLBACK = {
+      sessionBar: true,
+      turnTail: true,
+      sessionHover: true,
+      wayfinderThreshold: 12,
+      promptLanguage: 'auto',
+    }
+
+    /**
+     * Settings are global and shared by everything that reads them, so they live
+     * in one cache with subscribers rather than being fetched per surface. That
+     * is also what makes a change take effect without a reload.
+     */
+    let settingsCache = { value: null, promise: null }
+    const settingsListeners = new Set()
+
+    /** The last settings this page has seen, or null. */
+    function currentSettings() {
+      return settingsCache.value
+    }
+
+    /**
+     * Publish new settings to every subscriber.
+     * @param next - the settings object.
+     */
+    function applySettings(next) {
+      settingsCache.value = next
+      for (const listener of Array.from(settingsListeners)) {
+        try {
+          listener(next)
+        } catch (error) {
+          // One bad subscriber must not stop the others from updating.
+        }
+      }
+    }
+
+    /**
+     * Observe settings changes.
+     * @param listener - called with each new settings object.
+     * @returns an unsubscribe function.
+     */
+    function subscribeSettings(listener) {
+      settingsListeners.add(listener)
+      return () => {
+        settingsListeners.delete(listener)
+      }
+    }
+
+    /**
+     * Fetch the settings once, sharing the request.
+     * @param force - refetch even if a request is in flight.
+     * @returns the settings, or null when they could not be read.
+     */
+    function loadSettings(force = false) {
+      if (force !== true && settingsCache.promise !== null) return settingsCache.promise
+      const promise = getJson(`${ROUTE_BASE}/settings`)
+        .then((body) => {
+          const next = body?.settings ?? null
+          if (next !== null) applySettings(next)
+          return next
+        })
+        .catch(() => null)
+      settingsCache = { value: settingsCache.value, promise }
+      return promise
+    }
+
+    /** Whether one session-side surface should render, per the switches. */
+    function surfaceEnabled(key, settings) {
+      const effective = settings ?? settingsCache.value ?? SETTINGS_FALLBACK
+      const field = key === 'bar' ? 'sessionBar' : key === 'turnTail' ? 'turnTail' : key === 'hover' ? 'sessionHover' : null
+      if (field === null) return true
+      return effective[field] !== false
     }
 
     /**
@@ -877,8 +999,9 @@ window.__ModuleLoader__.load({
             h('div', { style: S.groupLabel }, group.label),
             ...group.items.map((item) =>
               h(
-                'div',
+                'button',
                 {
+                  type: 'button',
                   key: item.path,
                   className: 'dw-artifact',
                   title: item.path,
@@ -1725,10 +1848,12 @@ window.__ModuleLoader__.load({
      * @param mapProps - builds that surface's props from the resolved project.
      * @returns a slot occupant.
      */
-    function makeSessionSurface(Component, mapProps) {
+    function makeSessionSurface(Component, mapProps, switchKey) {
       return function SessionSurface(props) {
         const { sessionId } = props
         const [project, setProject] = useState(null)
+        const [settings, setSettings] = useState(currentSettings())
+        useEffect(() => subscribeSettings(setSettings), [])
         useEffect(() => {
           let cancelled = false
           findProjectForSession(sessionId)
@@ -1742,9 +1867,154 @@ window.__ModuleLoader__.load({
             cancelled = true
           }
         }, [sessionId])
+        // Switched off is a decision, not an absence: render nothing at all.
+        if (surfaceEnabled(switchKey, settings) !== true) return null
         if (project === null || project === undefined) return null
         return h(Component, { ...props, ...mapProps(project, props) })
       }
+    }
+
+    /**
+     * Styles inline styles cannot express: focus rings, hover affordances, and
+     * the reset a clickable row needs once it is a real button.
+     *
+     * Keyboard reachability is the point. Every interactive row is a real
+     * `<button>`, and this makes its focus visible; the colours come from theme
+     * tokens so nothing is pinned to one scheme.
+     */
+    const STYLE_ID = 'developer-workbench-styles'
+    const STYLE_TEXT = [
+      '.dw-artifact{display:flex;align-items:baseline;gap:7px;width:100%;text-align:left;background:transparent;border:0;font:inherit;color:inherit;cursor:pointer}',
+      '.dw-artifact:hover{background:var(--dsw-alias-bg-layer-2)}',
+      '.dw-project{cursor:pointer}',
+      '.dw-project:hover{background:var(--dsw-alias-bg-layer-2)}',
+      '.dw-settings-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--dsw-alias-border-l1);flex-wrap:wrap}',
+      '.dw-settings-row > label{display:flex;align-items:center;gap:7px;font-size:12.6px;cursor:pointer}',
+      '.dw-settings-row .dw-settings-note{font-size:11px;color:var(--dsw-alias-label-secondary);margin-left:auto;max-width:54%}',
+      '.dw-settings-row input[type="number"],.dw-settings-row select{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);border:1px solid var(--dsw-alias-border-l2);border-radius:7px;padding:4px 8px;font:inherit;font-size:12px}',
+      '.dw-artifact:focus-visible,.dw-project:focus-visible,.dw-session-advance:focus-visible,.dw-turn-record:focus-visible,.dw-turn-advance:focus-visible,.dw-turn-handoff:focus-visible,.dw-dispatch-open:focus-visible,.dw-handoff-open:focus-visible,.dw-dispatch-send:focus-visible,.dw-dispatch-copy:focus-visible,.dw-dispatch-close:focus-visible,.dw-bind:focus-visible,.dw-unbind:focus-visible,.dw-resume:focus-visible,.dw-choice-new:focus-visible,.dw-choice-session:focus-visible,.dw-pin-clear:focus-visible,.dw-focus-dismiss:focus-visible,.dw-settings-row input:focus-visible,.dw-settings-row select:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px;border-radius:6px}',
+    ].join('\n')
+
+    /**
+     * The settings page in the shell's Settings panel.
+     *
+     * Every row here changes something real. There is deliberately no "skills
+     * install root": the skills are served from the plugin package, so such a
+     * knob would control nothing — and the page says so rather than offering it.
+     */
+    function SettingsSection(props) {
+      const { settings, t, busy, error, notice, onChange } = props
+      const current = settings ?? SETTINGS_FALLBACK
+      const rows = []
+
+      const switchRow = (field, labelKey, noteKey) =>
+        h(
+          'div',
+          { className: 'dw-settings-row', key: field },
+          h(
+            'label',
+            null,
+            h('input', {
+              type: 'checkbox',
+              className: `dw-setting-${field}`,
+              checked: current[field] !== false,
+              disabled: busy === true,
+              onChange: (event) => onChange?.({ [field]: event.target.checked === true }),
+            }),
+            t(labelKey),
+          ),
+          h('span', { className: 'dw-settings-note' }, t(noteKey)),
+        )
+
+      rows.push(switchRow('sessionBar', 'settingSessionBar', 'settingSessionBarNote'))
+      rows.push(switchRow('turnTail', 'settingTurnTail', 'settingTurnTailNote'))
+      rows.push(switchRow('sessionHover', 'settingSessionHover', 'settingSessionHoverNote'))
+
+      rows.push(
+        h(
+          'div',
+          { className: 'dw-settings-row', key: 'wayfinderThreshold' },
+          h('label', null, t('settingThreshold')),
+          h('input', {
+            type: 'number',
+            className: 'dw-setting-wayfinderThreshold',
+            min: 1,
+            max: 200,
+            value: String(current.wayfinderThreshold ?? SETTINGS_FALLBACK.wayfinderThreshold),
+            disabled: busy === true,
+            onChange: (event) => {
+              const parsed = Number.parseInt(event?.target?.value ?? '', 10)
+              if (Number.isInteger(parsed)) onChange?.({ wayfinderThreshold: parsed })
+            },
+          }),
+          h('span', { className: 'dw-settings-note' }, t('settingThresholdNote')),
+        ),
+      )
+
+      rows.push(
+        h(
+          'div',
+          { className: 'dw-settings-row', key: 'promptLanguage' },
+          h('label', null, t('settingPromptLanguage')),
+          h(
+            'select',
+            {
+              className: 'dw-setting-promptLanguage',
+              value: current.promptLanguage ?? 'auto',
+              disabled: busy === true,
+              onChange: (event) => onChange?.({ promptLanguage: event.target.value }),
+            },
+            ['auto', 'zh', 'en'].map((value) =>
+              h('option', { key: value, value }, value === 'auto' ? t('settingLanguageAuto') : value),
+            ),
+          ),
+          h('span', { className: 'dw-settings-note' }, t('settingPromptLanguageNote')),
+        ),
+      )
+
+      return h(
+        'div',
+        { className: 'dw-settings' },
+        h('h2', { style: S.h1 }, t('settingsTitle')),
+        h('p', { style: S.lead }, t('settingsLead')),
+        ...rows,
+        h('p', { style: { ...S.bannerBody, marginTop: 14 } }, t('settingsSkillsNote')),
+        error === null || error === undefined ? null : h(BoardNotice, { tone: 'error', title: t('settingsFailed'), detail: error }),
+        notice === null || notice === undefined ? null : h('p', { style: S.muted }, notice),
+      )
+    }
+
+    /** Settings page container: owns loading, saving, and the notice. */
+    function SettingsSectionContainer(props) {
+      const t = typeof props?.t === 'function' ? props.t : makeTranslate(zh)
+      const [settings, setSettings] = useState(currentSettings())
+      const [busy, setBusy] = useState(false)
+      const [error, setError] = useState(null)
+      const [notice, setNotice] = useState(null)
+
+      useEffect(() => {
+        loadSettings(true)
+        return subscribeSettings(setSettings)
+      }, [])
+
+      const onChange = useCallback(async (patch) => {
+        if (typeof props?.saveSettings !== 'function') return
+        setBusy(true)
+        setError(null)
+        setNotice(null)
+        try {
+          const next = await props.saveSettings(patch)
+          // Publish immediately, so every other surface follows without a reload.
+          if (next !== null && next !== undefined) applySettings(next)
+          setNotice(t('settingsSaved'))
+        } catch (nextError) {
+          setError(nextError?.message ?? String(nextError))
+        } finally {
+          setBusy(false)
+        }
+      }, [props, t])
+
+      return h(SettingsSection, { settings, t, busy, error, notice, onChange })
     }
 
     // ── container ────────────────────────────────────────────────────────────
@@ -1777,6 +2047,12 @@ window.__ModuleLoader__.load({
       const [dispatchError, setDispatchError] = useState(null)
       const [dispatchNotice, setDispatchNotice] = useState(null)
       const [focus, setFocus] = useState(null)
+      const [settings, setSettings] = useState(currentSettings())
+
+      useEffect(() => {
+        loadSettings()
+        return subscribeSettings(setSettings)
+      }, [])
 
       // A session-side action lands the user here; the banner says why.
       useEffect(() => subscribeFocus(setFocus), [])
@@ -1961,6 +2237,9 @@ window.__ModuleLoader__.load({
           if (typeof options.handoff === 'string' && options.handoff.length > 0) {
             url += `&handoff=${encodeURIComponent(options.handoff)}`
           }
+          // The prompt follows the interface unless a language is pinned.
+          const lang = typeof props?.promptLang === 'function' ? props.promptLang() : null
+          if (typeof lang === 'string' && lang.length > 0) url += `&lang=${encodeURIComponent(lang)}`
           const built = await getJson(url)
           setDispatchRequest(built)
           setDispatchDraft(built.text)
@@ -2273,6 +2552,7 @@ window.__ModuleLoader__.load({
                 }
                 await navigator.clipboard.writeText(text)
               },
+              promptLang: () => interfaceLanguage(ctx.locale),
             }),
           },
           WorkbenchPage,
@@ -2295,17 +2575,17 @@ window.__ModuleLoader__.load({
         project,
         stage: project.stage?.id ?? null,
         onAdvance: focusOn('advance'),
-      }))
+      }), 'bar')
       const TurnTailSurface = makeSessionSurface(TurnTailActions, (project) => ({
         project,
         onRecord: focusOn('record'),
         onAdvance: focusOn('advance'),
         onHandoff: focusOn('handoff'),
-      }))
+      }), 'turnTail')
       const HoverSurface = makeSessionSurface(SessionHoverLine, (project) => ({
         project,
         stage: project.stage?.id ?? null,
-      }))
+      }), 'hover')
 
       ctx.slots.inject('conversation.composer.dock', () =>
         ctx.slots.register(
@@ -2323,6 +2603,37 @@ window.__ModuleLoader__.load({
         ctx.slots.register(
           { name: 'sidebar.session.row.hover', id: 'developer-workbench.hover', order: 100, locale: NS },
           HoverSurface,
+        ),
+      )
+
+      // Focus rings and hover affordances need a stylesheet: inline styles cannot
+      // express a pseudo-class. The sheet carries no colours of its own — every
+      // rule reads a theme token, so it follows a scheme switch.
+      ctx.effect(() => {
+        if (typeof document === 'undefined') return () => {}
+        if (document.getElementById(STYLE_ID) !== null) return () => {}
+        const element = document.createElement('style')
+        element.id = STYLE_ID
+        element.textContent = STYLE_TEXT
+        document.head.append(element)
+        return () => {
+          element.remove()
+        }
+      }, 'developer-workbench: styles')
+
+      ctx.slots.inject('settings.section', () =>
+        ctx.slots.register(
+          {
+            name: 'settings.section',
+            id: PANEL_ID,
+            order: 40,
+            label: () => t('settingsTitle'),
+            locale: NS,
+            inject: () => ({
+              saveSettings: (patch) => postJson(`${ROUTE_BASE}/settings`, patch).then((body) => body?.settings ?? null),
+            }),
+          },
+          SettingsSectionContainer,
         ),
       )
     }
@@ -2355,6 +2666,17 @@ window.__ModuleLoader__.load({
       loadOverview,
       requestFocus,
       subscribeFocus,
+      SettingsSection,
+      SettingsSectionContainer,
+      surfaceEnabled,
+      interfaceLanguage,
+      currentSettings,
+      applySettings,
+      subscribeSettings,
+      loadSettings,
+      SETTINGS_FALLBACK,
+      STYLE_TEXT,
+      STYLE_ID,
       shortSessionId,
       describeRemoteFailure,
       StagePanel,
