@@ -13,6 +13,7 @@ import path from 'node:path'
 
 import { readArtifactPreview, scanArtifacts } from './artifacts.js'
 import { describeProject, probeDirectory } from './projects.js'
+import { analyseBoard, createCommandRunner, readGitHubTickets, readLocalTickets, resolveGitHubRepo } from './tickets.js'
 import { readSkillInventory } from './skills.js'
 import { projectKey } from './state.js'
 import { TRACKER_KINDS, TRACKER_LABELS, resolveTracker } from './tracker.js'
@@ -107,7 +108,7 @@ function queryParam(req, name) {
  * @param options.now - clock, injectable for tests.
  * @returns route descriptors accepted by the web carrier.
  */
-export function buildRoutes({ ctx, store, info, now = () => new Date() }) {
+export function buildRoutes({ ctx, store, info, now = () => new Date(), run = createCommandRunner() }) {
   /** Resolve the registry lazily so a missing service degrades instead of throwing. */
   const registry = () => (typeof ctx.get === 'function' ? ctx.get('workspaceRegistry') : undefined)
 
@@ -376,5 +377,81 @@ export function buildRoutes({ ctx, store, info, now = () => new Date() }) {
     },
   }
 
-  return [health, skills, overview, probe, artifacts, artifact, bind, setTracker, unbind]
+  const tickets = {
+    kind: 'exact',
+    path: `${ROUTE_BASE}/tickets`,
+    handler: (req, res) => {
+      try {
+        const target = queryParam(req, 'path')
+        if (target === null) {
+          sendJson(res, 400, { error: 'path is required' })
+          return
+        }
+        const resolved = path.resolve(target)
+        const mapping = store.get(projectKey(resolved))?.tracker ?? null
+        const tracker = resolveTracker({ projectPath: resolved, mapping })
+
+        // Nothing decided the tracker: say so and send the user to the bind flow,
+        // rather than rendering an empty board that reads as "no tickets".
+        if (tracker === null) {
+          sendJson(res, 200, { tracker: null, state: 'needs-tracker', tickets: [], frontier: [], problems: [], notes: [] })
+          return
+        }
+
+        if (tracker.kind === 'local-markdown') {
+          const read = readLocalTickets({ projectPath: resolved })
+          sendJson(res, 200, { tracker, state: 'ready', ...analyseBoard(read.tickets), notes: read.notes })
+          return
+        }
+
+        if (tracker.kind === 'github') {
+          const repository = resolveGitHubRepo(resolved, run)
+          if (repository === null) {
+            sendJson(res, 200, {
+              tracker,
+              state: 'unavailable',
+              reason: { code: 'no-github-remote', message: 'this project has no GitHub remote to read issues from' },
+              tickets: [],
+              frontier: [],
+              problems: [],
+              notes: [],
+            })
+            return
+          }
+          const read = readGitHubTickets({ run, owner: repository.owner, repo: repository.repo })
+          if (read.ok !== true) {
+            sendJson(res, 200, {
+              tracker,
+              state: 'unavailable',
+              reason: { code: read.code, message: read.message },
+              repository,
+              tickets: [],
+              frontier: [],
+              problems: [],
+              notes: [],
+            })
+            return
+          }
+          sendJson(res, 200, { tracker, state: 'ready', repository, ...analyseBoard(read.tickets), notes: read.notes })
+          return
+        }
+
+        // A tracker this build cannot read is its own state. Rendering nothing
+        // would be indistinguishable from an empty, healthy board.
+        sendJson(res, 200, {
+          tracker,
+          state: 'unsupported',
+          reason: { code: 'adapter-missing', message: `no adapter for the ${tracker.kind} tracker yet` },
+          tickets: [],
+          frontier: [],
+          problems: [],
+          notes: [],
+        })
+      } catch (error) {
+        fail(res, 500, error)
+      }
+    },
+  }
+
+  return [health, skills, overview, probe, artifacts, artifact, tickets, bind, setTracker, unbind]
 }

@@ -29,6 +29,15 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
+import {
+  analyseBoard,
+  parseBlockedBy,
+  parseGitHubIssue,
+  parseGitHubRemote,
+  parseLocalIssue,
+  readGitHubTickets,
+} from '../lib/tickets.js'
+
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const PLUGIN_DIR = path.resolve(HERE, '..')
 
@@ -305,11 +314,174 @@ check('preview refusal "too-large" quotes both sizes', tooLargeText.includes('60
 check('byte formatting is readable', seam.formatBytes(512) === '512 B' && seam.formatBytes(2048) === '2 KB' && seam.formatBytes(1024 * 1024 * 3) === '3.0 MB')
 check('time formatting is locale-stable', /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(seam.formatWhen('2026-10-14T06:00:00.000Z')))
 
+// Ticket board rendering. The point of these assertions is that no failure state
+// is allowed to look like "this project simply has no tickets".
+const boardFixture = {
+  state: 'ready',
+  frontier: ['3'],
+  problems: [],
+  tickets: [
+    { id: '3', title: 'Board', statusKind: 'open', status: 'ready-for-agent', ready: true, blockedBy: [], openBlockers: [], unknownBlockers: [], acceptance: { total: 5, done: 3 }, edgesRead: true, blockedBySource: 'native-edge' },
+    { id: '6', title: 'Stage', statusKind: 'open', status: 'ready-for-agent', ready: false, blockedBy: ['3'], openBlockers: ['3'], unknownBlockers: [], acceptance: { total: 2, done: 0 }, edgesRead: true, blockedBySource: 'native-edge' },
+    { id: '2', title: 'Projects', statusKind: 'done', status: 'closed', ready: false, blockedBy: [], openBlockers: [], unknownBlockers: [], acceptance: { total: 1, done: 1 }, edgesRead: true, blockedBySource: 'none' },
+  ],
+}
+const boardText = renderText(seam.TicketBoard({ board: boardFixture, t: zhT })).join(' | ')
+check('board: every ticket is listed with its number', boardText.includes('#3') && boardText.includes('#6') && boardText.includes('#2'))
+check('board: ticket titles render', boardText.includes('Board') && boardText.includes('Stage') && boardText.includes('Projects'))
+check('board: the frontier count is shown', boardText.includes('可开工 1 张'))
+check('board: a startable ticket is chipped as startable', boardText.includes('可开工'))
+check('board: a blocked ticket is chipped as blocked', boardText.includes('被阻塞'))
+check('board: a blocked ticket names its open blocker', boardText.includes('被 #3 阻塞'))
+check('board: acceptance progress renders as done/total', boardText.includes('验收 3/5') && boardText.includes('验收 0/2'))
+check('board: a finished ticket is chipped as done', boardText.includes('已完成'))
+
+check('board: an undecided tracker explains itself instead of showing an empty board', renderText(seam.TicketBoard({ board: { state: 'needs-tracker' }, t: zhT })).join(' ').includes('tracker 还没定'))
+check('board: an unimplemented tracker names the kind it cannot read', renderText(seam.TicketBoard({ board: { state: 'unsupported', tracker: { kind: 'gitlab' } }, t: zhT })).join(' ').includes('gitlab'))
+check('board: an unreadable tracker quotes the reason code', renderText(seam.TicketBoard({ board: { state: 'unavailable', reason: { code: 'gh-offline', message: 'no route to host' } }, t: zhT })).join(' ').includes('gh-offline'))
+check('board: a healthy but empty board says it is empty', renderText(seam.TicketBoard({ board: { state: 'ready', tickets: [], frontier: [], problems: [] }, t: zhT })).join(' ').includes('还没有工单'))
+check('board: loading shows before the first answer', renderText(seam.TicketBoard({ board: null, t: zhT })).join(' ').includes('正在读取'))
+
+const boardProblemText = renderText(seam.TicketBoard({
+  board: {
+    state: 'ready',
+    tickets: [],
+    frontier: [],
+    problems: [
+      { code: 'cycle', ids: ['1', '2'] },
+      { code: 'self-blocked', ids: ['3'] },
+      { code: 'unknown-blocker', ids: ['99'] },
+      { code: 'edges-unread', ids: ['7'] },
+    ],
+  },
+  t: zhT,
+})).join(' | ')
+check('board: a blocking cycle is called out with its members', boardProblemText.includes('依赖成环') && boardProblemText.includes('1, 2'))
+check('board: a self-block is called out', boardProblemText.includes('自己阻塞自己') && boardProblemText.includes('3'))
+check('board: an unknown blocker is called out', boardProblemText.includes('不存在的工单') && boardProblemText.includes('99'))
+check('board: unreadable edges are called out as not startable', boardProblemText.includes('读不到') && boardProblemText.includes('7'))
+
 // Both dictionaries must define the same keys, or one language renders raw keys.
 const zhKeys = Object.keys(seam.dicts.zh).sort()
 const enKeys = Object.keys(seam.dicts.en).sort()
 check('zh and en dictionaries define identical key sets', zhKeys.length === enKeys.length && zhKeys.every((key, index) => key === enKeys[index]), `zh=${zhKeys.length} en=${enKeys.length}`)
 check('every rendered label is a real dictionary key', ['projects', 'noProjects', 'trackerUnknown', 'noGit', 'skillsTotal'].every((key) => key in seam.dicts.zh && key in seam.dicts.en))
+
+// ── 1c. tickets: parsing and analysis, with no tracker and no network ────────
+//
+// The board's hard cases are all textual or graphical, not remote: CRLF bodies,
+// `None (can start immediately)`, mutual blocks, self-references, and the
+// difference between "nothing blocks this" and "I could not find out". Those are
+// exercised here through the library, and the live GitHub path is exercised
+// separately over HTTP below.
+
+console.log('\ntickets (hermetic)')
+
+/** Build a command runner whose replies are scripted, so no CLI ever runs. */
+function makeRunner(replies) {
+  const calls = []
+  const run = (command, args) => {
+    calls.push({ command, args })
+    const match = replies.find((entry) => entry.when(command, args))
+    if (match === undefined) {
+      return { ok: false, code: 1, stdout: '', stderr: `unexpected call: ${command} ${args.join(' ')}`, spawnFailed: false }
+    }
+    return match.reply
+  }
+  return { run, calls }
+}
+
+const okReply = (stdout) => ({ ok: true, code: 0, stdout, stderr: '', spawnFailed: false })
+
+// CRLF is the real shape of these files on Windows, and an offset-based parser
+// silently drops the last line of such a body.
+const crlfTicket = '# 01: Wire the board\r\n\r\n**Blocked by:** None (can start immediately)\r\n\r\n**Status:** ready-for-agent\r\n\r\n- [ ] one\r\n- [x] two\r\n'
+const parsedLocal = parseLocalIssue(crlfTicket, '01-wire-the-board.md')
+check('local parse: CRLF body yields the numbered title', parsedLocal.title === 'Wire the board' && parsedLocal.id === '01', `${parsedLocal.id} / ${parsedLocal.title}`)
+check('local parse: "None (can start immediately)" means no blockers', parsedLocal.blockedBy.length === 0, JSON.stringify(parsedLocal.blockedBy))
+check('local parse: the Status line is read through emphasis', parsedLocal.status === 'ready-for-agent' && parsedLocal.statusKind === 'open', String(parsedLocal.status))
+check('local parse: checkboxes are counted', parsedLocal.acceptance.total === 2 && parsedLocal.acceptance.done === 1, JSON.stringify(parsedLocal.acceptance))
+check('local parse: a finished status is recognised', parseLocalIssue('# 02: x\r\n\r\n**Status:** resolved\r\n', '02-x.md').statusKind === 'done')
+check('blocker parse: a #-prefixed reference and a bare number both work', parseBlockedBy('**Blocked by:** #3, 02').join(',') === '3,02', parseBlockedBy('**Blocked by:** #3, 02').join(','))
+check('blocker parse: an absent line means no blockers', parseBlockedBy('no such line here').length === 0)
+
+check(
+  'github remote: https, scp and ssh spellings all parse, and non-GitHub is refused',
+  parseGitHubRemote('https://github.com/o/r.git')?.repo === 'r' &&
+    parseGitHubRemote('git@github.com:o/r.git')?.repo === 'r' &&
+    parseGitHubRemote('git@github.com:o/r')?.owner === 'o' &&
+    parseGitHubRemote('https://gitlab.com/o/r.git') === null,
+)
+check(
+  'github issue: a fallback body line is used when edges could not be read',
+  parseGitHubIssue({ number: 1, title: 't', state: 'OPEN', body: '**Blocked by:** 7\n' }, null).blockedBy.join(',') === '7',
+)
+
+const listReply = JSON.stringify([
+  { number: 3, title: 'board', state: 'OPEN', labels: [{ name: 'ready-for-agent' }], url: 'https://x/3', body: '- [x] a\n- [ ] b\n' },
+  { number: 6, title: 'stage', state: 'OPEN', labels: [], url: 'https://x/6', body: 'no blockers line\n' },
+  { number: 2, title: 'projects', state: 'CLOSED', labels: [], url: 'https://x/2', body: '' },
+])
+const scripted = makeRunner([
+  { when: (command, args) => command === 'gh' && args[0] === 'issue' && args[1] === 'list', reply: okReply(listReply) },
+  { when: (command, args) => command === 'gh' && args[0] === 'api' && args[1].endsWith('/issues/6/dependencies/blocked_by'), reply: okReply('3\n') },
+  { when: (command, args) => command === 'gh' && args[0] === 'api', reply: okReply('') },
+])
+const scriptedRead = readGitHubTickets({ run: scripted.run, owner: 'o', repo: 'r' })
+check('github read: every issue becomes a ticket', scriptedRead.ok === true && scriptedRead.tickets.length === 3, JSON.stringify(scriptedRead).slice(0, 120))
+const blockedTicket = scriptedRead.tickets.find((ticket) => ticket.id === '6')
+check('github read: blockers come from native edges, not the body', blockedTicket.blockedBy.join(',') === '3' && blockedTicket.blockedBySource === 'native-edge', JSON.stringify({ blockedBy: blockedTicket.blockedBy, source: blockedTicket.blockedBySource }))
+check('github read: acceptance checkboxes are counted from the body', scriptedRead.tickets.find((ticket) => ticket.id === '3').acceptance.done === 1)
+check('github read: a closed issue is done', scriptedRead.tickets.find((ticket) => ticket.id === '2').statusKind === 'done')
+check('github read: labels become the status text', scriptedRead.tickets.find((ticket) => ticket.id === '3').status === 'ready-for-agent')
+
+const scriptedBoard = analyseBoard(scriptedRead.tickets)
+check('analysis: a ticket with an open blocker is not startable', scriptedBoard.tickets.find((ticket) => ticket.id === '6').ready === false && scriptedBoard.frontier.includes('6') === false)
+check('analysis: an unblocked open ticket is startable', scriptedBoard.frontier.includes('3') === true, JSON.stringify(scriptedBoard.frontier))
+check('analysis: a finished ticket is never offered as startable', scriptedBoard.frontier.includes('2') === false)
+
+const blockedThenOpen = analyseBoard([
+  { id: '1', title: 'a', statusKind: 'done', blockedBy: [], edgesRead: true, acceptance: { total: 0, done: 0 } },
+  { id: '2', title: 'b', statusKind: 'open', blockedBy: ['1'], edgesRead: true, acceptance: { total: 0, done: 0 } },
+])
+check('analysis: a finished blocker unlocks its dependent', blockedThenOpen.frontier.join(',') === '2', JSON.stringify(blockedThenOpen.frontier))
+
+const nasty = analyseBoard([
+  { id: '1', title: 'a', statusKind: 'open', blockedBy: ['2'], edgesRead: true, acceptance: { total: 0, done: 0 } },
+  { id: '2', title: 'b', statusKind: 'open', blockedBy: ['1'], edgesRead: true, acceptance: { total: 0, done: 0 } },
+  { id: '3', title: 'c', statusKind: 'open', blockedBy: ['3'], edgesRead: true, acceptance: { total: 0, done: 0 } },
+  { id: '4', title: 'd', statusKind: 'open', blockedBy: ['99'], edgesRead: true, acceptance: { total: 0, done: 0 } },
+  { id: '5', title: 'e', statusKind: 'open', blockedBy: [], edgesRead: true, acceptance: { total: 0, done: 0 } },
+])
+check('analysis: a mutual block is a cycle and neither end is startable', nasty.frontier.includes('1') === false && nasty.frontier.includes('2') === false && nasty.problems.some((problem) => problem.code === 'cycle'))
+check('analysis: a self-reference is reported, not silently startable', nasty.frontier.includes('3') === false && nasty.problems.some((problem) => problem.code === 'self-blocked'))
+check('analysis: an unknown blocker keeps a ticket off the frontier', nasty.frontier.includes('4') === false && nasty.problems.some((problem) => problem.code === 'unknown-blocker'))
+check('analysis: the untouched ticket is the only startable one', nasty.frontier.join(',') === '5', JSON.stringify(nasty.frontier))
+
+const failureCases = [
+  { label: 'gh is missing', reply: { ok: false, code: null, stdout: '', stderr: '', spawnFailed: true }, expected: 'gh-unavailable' },
+  { label: 'gh is not authenticated', reply: { ok: false, code: 1, stdout: '', stderr: 'gh: To get started with GitHub CLI, please run: gh auth login', spawnFailed: false }, expected: 'gh-not-authenticated' },
+  { label: 'the network is down', reply: { ok: false, code: 1, stdout: '', stderr: 'dial tcp: lookup github.com: could not resolve host', spawnFailed: false }, expected: 'gh-offline' },
+  { label: 'gh answers with something else', reply: { ok: false, code: 1, stdout: '', stderr: 'weird failure', spawnFailed: false }, expected: 'gh-failed' },
+]
+for (const failure of failureCases) {
+  const result = readGitHubTickets({ run: makeRunner([{ when: () => true, reply: failure.reply }]).run, owner: 'o', repo: 'r' })
+  check(`github read: "${failure.label}" is named, not swallowed`, result.ok === false && result.code === failure.expected, `${result.code}`)
+}
+const notJson = readGitHubTickets({ run: makeRunner([{ when: () => true, reply: okReply('total nonsense') }]).run, owner: 'o', repo: 'r' })
+check('github read: non-JSON output is refused', notJson.code === 'gh-bad-json', String(notJson.code))
+
+const edgesBroken = readGitHubTickets({
+  run: makeRunner([
+    { when: (command, args) => args[0] === 'issue', reply: okReply(JSON.stringify([{ number: 1, title: 'a', state: 'OPEN', labels: [], url: '', body: '' }])) },
+    { when: (command, args) => args[0] === 'api', reply: { ok: false, code: 1, stdout: '', stderr: 'boom', spawnFailed: false } },
+  ]).run,
+  owner: 'o',
+  repo: 'r',
+})
+check('github read: an unreadable edge is marked unread, not empty', edgesBroken.tickets[0].edgesRead === false && edgesBroken.tickets[0].blockedBySource === 'unread')
+const edgesBrokenBoard = analyseBoard(edgesBroken.tickets)
+check('analysis: an unreadable edge is never called startable', edgesBrokenBoard.frontier.length === 0 && edgesBrokenBoard.problems.some((problem) => problem.code === 'edges-unread'))
 
 // ── 2. host routes ────────────────────────────────────────────────────────────
 
@@ -537,6 +709,49 @@ if (CLIENT_ONLY) {
     const hugeResponse = await fetch(`${BASE}/api/developer-workbench/artifact?path=${encodeURIComponent(hugeFile)}`)
     const hugeBody = await hugeResponse.json()
     check('artifact preview: an oversized file is refused, never silently cut', hugeResponse.status === 413 && hugeBody.code === 'too-large' && hugeBody.maxFileBytes === 512 * 1024, `HTTP ${hugeResponse.status} ${hugeBody.code}`)
+
+    // ── tickets: the board over HTTP ─────────────────────────────────────────
+    const boardProject = tempDir('dsh-wb-board-')
+    writeDeclaration(boardProject, 'Local markdown')
+    fs.mkdirSync(path.join(boardProject, '.scratch', 'feat', 'issues'), { recursive: true })
+    fs.writeFileSync(path.join(boardProject, '.scratch', 'feat', 'issues', '01-first.md'), '# 01: First\r\n\r\n**Blocked by:** None (can start immediately)\r\n\r\n**Status:** ready-for-agent\r\n\r\n- [ ] a\r\n- [ ] b\r\n', 'utf8')
+    fs.writeFileSync(path.join(boardProject, '.scratch', 'feat', 'issues', '02-second.md'), '# 02: Second\r\n\r\n**Blocked by:** 01\r\n\r\n**Status:** ready-for-agent\r\n\r\n- [x] a\r\n', 'utf8')
+
+    const localBoard = await getJson(`/api/developer-workbench/tickets?path=${encodeURIComponent(boardProject)}`)
+    check('board: a local-markdown project reads its tickets', localBoard.state === 'ready' && localBoard.tickets.length === 2, `${localBoard.state} / ${localBoard.tickets.length}`)
+    check('board: a CRLF ticket body parses', localBoard.tickets.find((ticket) => ticket.id === '01')?.title === 'First', String(localBoard.tickets.find((ticket) => ticket.id === '01')?.title))
+    check('board: only the unblocked ticket is on the frontier', localBoard.frontier.join(',') === '01', JSON.stringify(localBoard.frontier))
+    check('board: a blocked ticket names its blocker', localBoard.tickets.find((ticket) => ticket.id === '02')?.openBlockers.join(',') === '01')
+    check('board: acceptance progress travels with the ticket', localBoard.tickets.find((ticket) => ticket.id === '02')?.acceptance.done === 1)
+
+    const undeclaredProject = tempDir('dsh-wb-undeclared-')
+    const needsTracker = await getJson(`/api/developer-workbench/tickets?path=${encodeURIComponent(undeclaredProject)}`)
+    check('board: an undecided tracker asks for initialization, not an empty board', needsTracker.state === 'needs-tracker' && needsTracker.tracker === null, String(needsTracker.state))
+
+    const gitlabBoard = tempDir('dsh-wb-glab-board-')
+    writeDeclaration(gitlabBoard, 'GitLab')
+    const unsupportedBoard = await getJson(`/api/developer-workbench/tickets?path=${encodeURIComponent(gitlabBoard)}`)
+    check('board: a tracker with no adapter is its own state', unsupportedBoard.state === 'unsupported' && unsupportedBoard.reason?.code === 'adapter-missing', `${unsupportedBoard.state}/${unsupportedBoard.reason?.code}`)
+
+    const noPathTickets = await fetch(`${BASE}/api/developer-workbench/tickets`)
+    check('board: a missing path parameter is a 400', noPathTickets.status === 400, `HTTP ${noPathTickets.status}`)
+
+    // Live board on this very repository. An environment failure is reported as a
+    // skip; anything else is a failure, because "could not read" must never be
+    // mistaken for "nothing is blocked".
+    const liveBoard = await getJson(`/api/developer-workbench/tickets?path=${encodeURIComponent(path.resolve(HERE, '..', '..'))}`)
+    const environmentCodes = ['gh-unavailable', 'gh-not-authenticated', 'gh-offline', 'no-github-remote']
+    if (liveBoard.state === 'ready') {
+      check('board: the live GitHub board reads this repository', liveBoard.tickets.length > 0 && liveBoard.repository?.repo === 'DSH-Developer-Workbench', JSON.stringify(liveBoard.repository))
+      const liveIssue6 = liveBoard.tickets.find((ticket) => ticket.id === '6')
+      check('board: the live native edge #6 blocked_by #3 reaches the ticket', liveIssue6?.blockedBy.includes('3') === true && liveIssue6?.blockedBySource === 'native-edge', JSON.stringify({ blockedBy: liveIssue6?.blockedBy, source: liveIssue6?.blockedBySource }))
+      check('board: every live ticket carries id, title and acceptance', liveBoard.tickets.every((ticket) => typeof ticket.id === 'string' && ticket.id.length > 0 && typeof ticket.title === 'string' && typeof ticket.acceptance?.total === 'number'))
+      check('board: the unblocked spec issue is on the live frontier', liveBoard.frontier.includes('1') === true, JSON.stringify(liveBoard.frontier))
+    } else if (environmentCodes.includes(liveBoard.reason?.code)) {
+      console.log(`  skip live GitHub board: ${liveBoard.reason.code} — ${liveBoard.reason.message}`)
+    } else {
+      check('board: the live GitHub board is readable', false, JSON.stringify(liveBoard.reason ?? liveBoard.state))
+    }
 
     // ── overview ─────────────────────────────────────────────────────────────
     const overview = await getJson('/api/developer-workbench/overview')

@@ -69,6 +69,22 @@ window.__ModuleLoader__.load({
       choose: '就用这个',
       stageUnknown: '阶段待接入',
       stageBody: '项目列表已经接上真实数据。下一步是工单看板与阶段推导。',
+      board: '工单看板',
+      boardNeedsTracker: '这个项目的 tracker 还没定。先绑定项目并选择 tracker，看板才有东西可读。',
+      boardUnsupported: '还没有 {kind} tracker 的适配器，所以这里不显示任何工单。',
+      boardUnavailable: '读不到 tracker（{reason}）。',
+      boardEmpty: '这个项目在 tracker 上还没有工单。',
+      boardFrontier: '可开工 {n} 张',
+      boardBlockedBy: '被 {ids} 阻塞',
+      boardBlockedByUnknown: '被不存在的 {ids} 阻塞',
+      boardAcceptance: '验收 {done}/{total}',
+      boardReady: '可开工',
+      boardDone: '已完成',
+      boardBlocked: '被阻塞',
+      boardProblemCycle: '依赖成环：{ids} —— 这些工单永远不会解锁。',
+      boardProblemSelf: '自己阻塞自己：{ids}。',
+      boardProblemUnknown: '这些工单依赖了不存在的工单：{ids}。',
+      boardProblemUnread: '这些工单的依赖读不到，已按「不可开工」处理：{ids}。',
       artifacts: '产物',
       artifactsLoading: '正在扫描产物…',
       artifactsEmpty: '这个项目还没有 spec / ADR / 术语表。',
@@ -124,6 +140,22 @@ window.__ModuleLoader__.load({
       choose: 'Use this',
       stageUnknown: 'Stage arrives next',
       stageBody: 'The project list is wired to real data. Next are the ticket board and stage derivation.',
+      board: 'Ticket board',
+      boardNeedsTracker: 'This project has no tracker yet. Bind it and pick a tracker before the board can read anything.',
+      boardUnsupported: 'There is no adapter for a {kind} tracker yet, so no tickets are shown.',
+      boardUnavailable: 'The tracker could not be read ({reason}).',
+      boardEmpty: 'This project has no tickets on its tracker yet.',
+      boardFrontier: '{n} startable',
+      boardBlockedBy: 'blocked by {ids}',
+      boardBlockedByUnknown: 'blocked by the missing {ids}',
+      boardAcceptance: 'acceptance {done}/{total}',
+      boardReady: 'startable',
+      boardDone: 'done',
+      boardBlocked: 'blocked',
+      boardProblemCycle: 'Blocking cycle: {ids} — these will never unlock.',
+      boardProblemSelf: 'Blocked by itself: {ids}.',
+      boardProblemUnknown: 'These depend on tickets that do not exist: {ids}.',
+      boardProblemUnread: 'Blocking edges could not be read for {ids}, so they are treated as not startable.',
       artifacts: 'Artifacts',
       artifactsLoading: 'Scanning artifacts…',
       artifactsEmpty: 'This project has no spec, ADR or glossary yet.',
@@ -756,6 +788,163 @@ window.__ModuleLoader__.load({
       return h('div', { className: 'dw-tracker-picker', style: { ...S.banner, borderLeftColor: 'var(--dsw-alias-state-warn-primary)' } }, body)
     }
 
+    /** A tinted notice used by the board's non-ready states. */
+    function BoardNotice(props) {
+      const { tone, title, detail } = props
+      const color = tone === 'error' ? 'var(--dsw-alias-state-error-primary)' : 'var(--dsw-alias-state-warn-primary)'
+      return h(
+        'div',
+        { className: 'dw-board-notice', style: { ...S.banner, borderLeftColor: color } },
+        h('div', { style: S.bannerTitle }, title),
+        detail === null || detail === undefined ? null : h('p', { style: S.bannerBody }, detail),
+      )
+    }
+
+    /** One ticket card. */
+    function TicketCard(props) {
+      const { ticket, t } = props
+      const tone = ticket.statusKind === 'done' ? 'done' : ticket.ready === true ? 'ready' : 'blocked'
+      const toneColor = tone === 'ready'
+        ? 'var(--dsw-alias-state-success-primary)'
+        : tone === 'blocked'
+          ? 'var(--dsw-alias-state-warn-primary)'
+          : 'var(--dsw-alias-label-secondary)'
+
+      const children = [
+        h(
+          'div',
+          { key: 'head', style: { display: 'flex', alignItems: 'baseline', gap: 7 } },
+          h('span', { key: 'id', style: { ...S.mono, fontSize: 10.5, color: 'var(--dsw-alias-label-secondary)', flex: '0 0 auto' } }, `#${ticket.id}`),
+          h('span', { key: 'title', style: { fontSize: 12.6, fontWeight: 600, minWidth: 0 } }, ticket.title),
+          h(
+            'span',
+            { key: 'state', style: { ...S.chip, marginLeft: 'auto', color: toneColor, borderColor: toneColor } },
+            tone === 'ready' ? t('boardReady') : tone === 'done' ? t('boardDone') : t('boardBlocked'),
+          ),
+        ),
+        h(
+          'div',
+          { key: 'meta', style: S.meta },
+          ticket.acceptance.total > 0
+            ? h('span', { key: 'acceptance' }, t('boardAcceptance', { done: ticket.acceptance.done, total: ticket.acceptance.total }))
+            : null,
+          ticket.openBlockers.length > 0
+            ? h(
+                'span',
+                { key: 'blockers', style: { color: 'var(--dsw-alias-state-warn-primary)' } },
+                t('boardBlockedBy', { ids: ticket.openBlockers.map((id) => `#${id}`).join(', ') }),
+              )
+            : null,
+          ticket.unknownBlockers.length > 0
+            ? h(
+                'span',
+                { key: 'unknown', style: { color: 'var(--dsw-alias-state-warn-primary)' } },
+                t('boardBlockedByUnknown', { ids: ticket.unknownBlockers.join(', ') }),
+              )
+            : null,
+        ),
+      ]
+
+      if (ticket.acceptance.total > 0) {
+        const percent = Math.round((ticket.acceptance.done / ticket.acceptance.total) * 100)
+        children.push(
+          h(
+            'div',
+            { key: 'bar', style: { height: 4, borderRadius: 3, background: 'var(--dsw-alias-border-l1)', marginTop: 6, overflow: 'hidden' } },
+            h('i', { style: { display: 'block', height: '100%', width: `${percent}%`, background: toneColor } }),
+          ),
+        )
+      }
+
+      return h('div', { className: `dw-ticket dw-ticket-${tone}`, style: { ...S.row, marginBottom: 6 } }, children)
+    }
+
+    /**
+     * The middle column's ticket board.
+     *
+     * Every non-ready state is rendered as its own explanation. A board that
+     * silently shows nothing cannot be told apart from a project with no
+     * tickets, which is exactly the confusion this surface exists to remove.
+     */
+    function TicketBoard(props) {
+      const { board, t } = props
+      if (board === null || board === undefined) {
+        return h('p', { className: 'dw-board', style: S.muted }, t('loading'))
+      }
+
+      if (board.state === 'needs-tracker') {
+        return h(
+          'div',
+          { className: 'dw-board' },
+          h('div', { style: S.sectionTitle }, t('board')),
+          h(BoardNotice, { tone: 'warn', title: t('boardNeedsTracker') }),
+        )
+      }
+      if (board.state === 'unsupported') {
+        return h(
+          'div',
+          { className: 'dw-board' },
+          h('div', { style: S.sectionTitle }, t('board')),
+          h(BoardNotice, { tone: 'warn', title: t('boardUnsupported', { kind: board.tracker?.kind ?? '?' }) }),
+        )
+      }
+      if (board.state === 'unavailable') {
+        return h(
+          'div',
+          { className: 'dw-board' },
+          h('div', { style: S.sectionTitle }, t('board')),
+          h(BoardNotice, {
+            tone: 'warn',
+            title: t('boardUnavailable', { reason: board.reason?.code ?? '?' }),
+            detail: board.reason?.message ?? null,
+          }),
+        )
+      }
+
+      const tickets = Array.isArray(board.tickets) ? board.tickets : []
+      const problems = Array.isArray(board.problems) ? board.problems : []
+
+      const header = [h('div', { key: 'label', style: { ...S.sectionTitle, marginBottom: 0 } }, t('board'))]
+      if (tickets.length > 0) {
+        header.push(
+          h(
+            'span',
+            {
+              key: 'frontier',
+              style: {
+                ...S.chip,
+                marginLeft: 8,
+                color: 'var(--dsw-alias-state-success-primary)',
+                borderColor: 'var(--dsw-alias-state-success-primary)',
+              },
+            },
+            t('boardFrontier', { n: board.frontier?.length ?? 0 }),
+          ),
+        )
+      }
+
+      const cards = tickets.length === 0
+        ? [h('p', { key: 'empty', style: S.muted }, t('boardEmpty'))]
+        : tickets.map((ticket) => h(TicketCard, { key: ticket.id, ticket, t }))
+
+      const warnings = []
+      for (const problem of problems) {
+        const ids = Array.isArray(problem.ids) ? problem.ids.join(', ') : ''
+        if (problem.code === 'cycle') warnings.push(h('p', { key: 'cycle', style: { ...S.muted, color: 'var(--dsw-alias-state-warn-primary)' } }, t('boardProblemCycle', { ids })))
+        else if (problem.code === 'self-blocked') warnings.push(h('p', { key: 'self', style: { ...S.muted, color: 'var(--dsw-alias-state-warn-primary)' } }, t('boardProblemSelf', { ids })))
+        else if (problem.code === 'unknown-blocker') warnings.push(h('p', { key: 'unknown', style: { ...S.muted, color: 'var(--dsw-alias-state-warn-primary)' } }, t('boardProblemUnknown', { ids })))
+        else if (problem.code === 'edges-unread') warnings.push(h('p', { key: 'unread', style: { ...S.muted, color: 'var(--dsw-alias-state-warn-primary)' } }, t('boardProblemUnread', { ids })))
+      }
+
+      return h(
+        'div',
+        { className: 'dw-board', style: { marginTop: 6 } },
+        h('div', { style: { display: 'flex', alignItems: 'center', marginBottom: 9 } }, header),
+        ...cards,
+        ...warnings,
+      )
+    }
+
     // ── container ────────────────────────────────────────────────────────────
 
     /**
@@ -776,6 +965,7 @@ window.__ModuleLoader__.load({
       const [activeKey, setActiveKey] = useState(null)
       const [artifacts, setArtifacts] = useState(null)
       const [preview, setPreview] = useState(null)
+      const [board, setBoard] = useState(null)
 
       useEffect(() => {
         let cancelled = false
@@ -818,6 +1008,29 @@ window.__ModuleLoader__.load({
             // A project whose artifacts cannot be scanned is not an error worth a
             // banner: the group simply has nothing to show.
             if (!cancelled) setArtifacts({ groups: [] })
+          })
+        return () => {
+          cancelled = true
+        }
+      }, [activePath, attempt])
+
+      // The board has its own request: it is a different tracker, a different
+      // failure mode, and a different refresh cadence from the artifact scan.
+      useEffect(() => {
+        if (activePath === null) {
+          setBoard(null)
+          return undefined
+        }
+        let cancelled = false
+        setBoard(null)
+        getJson(`${ROUTE_BASE}/tickets?path=${encodeURIComponent(activePath)}`)
+          .then((next) => {
+            if (!cancelled) setBoard(next)
+          })
+          .catch(() => {
+            if (!cancelled) {
+              setBoard({ state: 'unavailable', reason: { code: 'request-failed' }, tickets: [], frontier: [], problems: [] })
+            }
           })
         return () => {
           cancelled = true
@@ -938,7 +1151,12 @@ window.__ModuleLoader__.load({
           ? h('p', { style: S.muted }, t('loading'))
           : preview !== null
             ? h(ArtifactPreview, { preview, t, onLoadMore: loadMore, onClose: closeArtifact })
-            : h(StagePanel, { t, project: activeProject })
+            : h(
+                'div',
+                null,
+                h(StagePanel, { t, project: activeProject }),
+                h(TicketBoard, { board, t }),
+              )
 
       return h(
         'div',
@@ -1037,6 +1255,9 @@ window.__ModuleLoader__.load({
       TrackerPicker,
       ArtifactGroups,
       ArtifactPreview,
+      BoardNotice,
+      TicketBoard,
+      TicketCard,
       SkillGrid,
       StagePanel,
       describeGit,
