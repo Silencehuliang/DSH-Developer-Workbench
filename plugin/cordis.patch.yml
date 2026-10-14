@@ -1,0 +1,34 @@
+# dsh-developer-workbench bundle patch.
+#
+# Two rows:
+#
+# 1) `developer-workbench` — the plugin's host half. The profile patch targets
+#    this exact id to override `dataDir` (empty string = the profile's own
+#    `.developer-workbench` directory).
+#
+# 2) `developer-workbench-skills` — a filesystem skill provider that serves
+#    Matt Pocock's skills straight out of this package's `skills/` directory, so
+#    they travel with the plugin instead of having to be copied into every
+#    project. `includeDefaultRoots` stays on so the usual project/user skill
+#    roots keep working too: the desktop profile's own preset-scoped provider is
+#    currently inactive (see README "Known issues"), and this row is what makes
+#    skill discovery work again.
+#
+# The `!!js` expression resolves this package by name from the patch's own base
+# URL, exactly like the shipped agent-preset rows do. A literal path would break
+# on any other checkout.
+
+- insert:
+    - id: developer-workbench
+      name: 'dsh-developer-workbench'
+      config:
+        dataDir: ''
+
+    - id: developer-workbench-skills
+      name: '@deepseek-ai/dsh-skill-filesystem'
+      config:
+        providerName: developer-workbench-skills
+        includeDefaultRoots: true
+        watch: true
+        customSkillDirs:
+          - !!js process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:path').dirname(process.getBuiltinModule('node:module').createRequire(baseUrl).resolve('dsh-developer-workbench/package.json')), 'skills')

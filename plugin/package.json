@@ -1,0 +1,36 @@
+{
+  "name": "dsh-developer-workbench",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "开发工作台：把本地项目、工作区会话与 Matt Pocock 技能流程接到一起",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "lib",
+    "skills",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": []
+    }
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT"
+}
