@@ -39,6 +39,7 @@ import {
 } from '../lib/tickets.js'
 import { STAGES, deriveStage } from '../lib/stage.js'
 import { DEFAULT_TRIAGE_LABELS, buildDispatchPrompt, readTriageLabels } from '../lib/prompts.js'
+import { readSkillInventory, reconcileSkills } from '../lib/skills.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const PLUGIN_DIR = path.resolve(HERE, '..')
@@ -248,15 +249,6 @@ check('tracker picker asks when the project declares nothing', promptText.includ
 check('tracker picker offers every tracker kind', seam.TRACKER_CHOICES.every((choice) => promptText.includes(choice.label)))
 const conflictText = renderText(seam.TrackerPicker({ pending: { path: '/tmp/b', conflict: { declaredKind: 'github', mappedKind: 'local-markdown' } }, t: zhT, onChoose: () => {} })).join(' | ')
 check('tracker picker surfaces a conflict instead of guessing', conflictText.includes('不一致') && conflictText.includes('github') && conflictText.includes('local-markdown'))
-
-// Skill grid.
-const skillText = renderText(seam.SkillGrid({ inventory: { skills: [
-  { name: 'grilling', description: 'grill', modelInvocable: true },
-  { name: 'to-tickets', description: 'tickets', modelInvocable: false },
-] }, t: zhT })).join(' | ')
-check('skill grid names every skill', skillText.includes('grilling') && skillText.includes('to-tickets'))
-check('skill grid separates model-loadable from human-only', skillText.includes('model') && skillText.includes('human'))
-check('skill grid degrades when the self-check is unavailable', renderText(seam.SkillGrid({ inventory: null, t: zhT })).join(' ').includes('技能自检暂不可用'))
 
 // Artifacts: grouping, preview, and every refusal keeping its own words.
 const artifactScan = {
@@ -576,6 +568,48 @@ try {
 }
 check('dispatch run: an empty session choice is refused', emptyChoice === 'no target session was chosen', String(emptyChoice))
 
+// Skill self-check rendering. Four distinct claims must stay distinguishable.
+const selfCheckFixture = {
+  state: 'ready',
+  complete: true,
+  counts: { total: 27, discovered: 27, notDiscovered: 0, invalid: 0, modelInvocable: 11, humanOnly: 16 },
+  diagnosis: { code: 'ok', hint: null },
+  rows: [
+    { name: 'grilling', description: 'grill a plan', status: 'discovered', modelInvocable: true, userInvocable: true, problems: [] },
+    { name: 'to-tickets', description: 'cut tickets', status: 'discovered', modelInvocable: false, userInvocable: true, problems: [] },
+  ],
+  otherSkills: [{ name: 'brain', description: 'x', source: 'user-agents', provider: 'developer-workbench-skills', modelInvocable: true }],
+}
+const selfCheckText = renderText(seam.SkillGrid({ status: selfCheckFixture, t: zhT })).join(' | ')
+check('self-check: names every shipped skill', selfCheckText.includes('grilling') && selfCheckText.includes('to-tickets'))
+check('self-check: separates model-loadable from human-only', selfCheckText.includes('model') && selfCheckText.includes('human'))
+check('self-check: reports how many DSH actually sees', selfCheckText.includes('DSH 看到 27 个'), selfCheckText.slice(0, 160))
+check('self-check: lists other skills DSH sees, separately', selfCheckText.includes('brain') && selfCheckText.includes('还看到 1 个别的技能'))
+check('self-check: a healthy catalog shows no verdict banner', selfCheckText.includes('自检结论') === false)
+check('self-check: says the skills are supplied by the package, not the project', selfCheckText.includes('别去拷文件'))
+check('self-check: loading shows before the first answer', renderText(seam.SkillGrid({ status: null, t: zhT })).join(' ').includes('正在读取技能自检'))
+
+const missedText = renderText(seam.SkillGrid({
+  status: { ...selfCheckFixture, counts: { ...selfCheckFixture.counts, discovered: 26, notDiscovered: 1 }, diagnosis: { code: 'partially-discovered', hint: '这些在磁盘上但没进目录：to-tickets。' }, rows: [{ name: 'to-tickets', description: 'x', status: 'not-discovered', modelInvocable: false, userInvocable: true, problems: [] }] },
+  t: zhT,
+})).join(' | ')
+check('self-check: an undiscovered skill is chipped as such, not as healthy', missedText.includes('not-discovered'))
+check('self-check: the verdict banner carries the actionable hint', missedText.includes('自检结论') && missedText.includes('没进目录'))
+
+const invalidText = renderText(seam.SkillGrid({
+  status: { ...selfCheckFixture, counts: { ...selfCheckFixture.counts, discovered: 0, notDiscovered: 26, invalid: 1 }, diagnosis: { code: 'invalid-entries', hint: '这些技能的 frontmatter 有问题。' }, rows: [{ name: 'broken', description: '', status: 'invalid', modelInvocable: false, userInvocable: false, problems: ['name is missing', 'description is required'] }] },
+  t: zhT,
+})).join(' | ')
+check('self-check: bad frontmatter is chipped as invalid', invalidText.includes('invalid'))
+check('self-check: a broken row shows its problems instead of a description', invalidText.includes('name is missing'))
+
+const unreadableText = renderText(seam.SkillGrid({
+  status: { state: 'unavailable', reason: { code: 'skills-service-missing', message: 'no registry' }, complete: null, counts: { total: 27, discovered: 0, notDiscovered: 27, invalid: 0, modelInvocable: 11, humanOnly: 16 }, rows: [{ name: 'grilling', description: 'x', status: 'unknown', modelInvocable: true, userInvocable: true, problems: [] }], otherSkills: [], diagnosis: { code: 'catalog-unavailable', hint: '读不到 DSH 的技能目录。' } },
+  t: zhT,
+})).join(' | ')
+check('self-check: an unreadable catalog says so instead of claiming absence', unreadableText.includes('读不到 DSH 的技能目录'))
+check('self-check: unreadable rows are chipped unknown, never missing', unreadableText.includes('unknown') && unreadableText.includes('not-discovered') === false)
+
 // Both dictionaries must define the same keys, or one language renders raw keys.
 const zhKeys = Object.keys(seam.dicts.zh).sort()
 const enKeys = Object.keys(seam.dicts.en).sort()
@@ -814,6 +848,60 @@ const declaredLabels = readTriageLabels(labelFixture)
 check('labels: the tracker column is read, not the canonical column', declaredLabels.join(',') === 'bug:triage,agent-ready', declaredLabels.join(','))
 fs.rmSync(labelFixture, { recursive: true, force: true })
 
+// ── 1f. skill self-check: shipped versus actually discoverable ───────────────
+
+console.log('\nskill self-check (hermetic)')
+
+const shippedSkills = readSkillInventory(BUNDLED_SKILLS)
+const fullCatalog = shippedSkills.map((row) => ({
+  name: row.name,
+  description: row.description,
+  source: 'custom',
+  provider: 'developer-workbench-skills',
+  invocation: { modelInvocable: row.modelInvocable, userInvocable: row.userInvocable },
+}))
+
+const healthyCheck = reconcileSkills({ onDisk: shippedSkills, catalog: fullCatalog, complete: true })
+check('self-check: a complete package in a complete catalog is ok', healthyCheck.diagnosis.code === 'ok', healthyCheck.diagnosis.code)
+check('self-check: the shipped count matches what the package holds', healthyCheck.counts.total === EXPECTED_TOTAL && healthyCheck.counts.discovered === EXPECTED_TOTAL, JSON.stringify(healthyCheck.counts))
+
+const missingOne = reconcileSkills({ onDisk: shippedSkills, catalog: fullCatalog.filter((entry) => entry.name !== 'to-tickets'), complete: true })
+check('self-check: a skill the catalog does not hold is named in the diagnosis', missingOne.diagnosis.code === 'partially-discovered' && missingOne.diagnosis.hint.includes('to-tickets'), missingOne.diagnosis.code)
+check('self-check: that skill is marked not-discovered, not invalid', missingOne.rows.find((row) => row.name === 'to-tickets')?.status === 'not-discovered')
+
+const noneVisible = reconcileSkills({ onDisk: shippedSkills, catalog: [], complete: true })
+check('self-check: an empty catalog is a discovery failure, not a clean zero', noneVisible.diagnosis.code === 'none-discovered' && noneVisible.counts.notDiscovered === EXPECTED_TOTAL, noneVisible.diagnosis.code)
+check('self-check: the failure hint names the row to check', noneVisible.diagnosis.hint.includes('cordis.patch.yml') && noneVisible.diagnosis.hint.includes('skill-filesystem'), noneVisible.diagnosis.hint)
+
+// An incomplete read must never be reported as absence: that is the difference
+// between "you have a problem" and "ask again".
+const incompleteRead = reconcileSkills({ onDisk: shippedSkills, catalog: [], complete: false })
+check('self-check: an incomplete discovery is never called missing', incompleteRead.diagnosis.code === 'discovery-incomplete', incompleteRead.diagnosis.code)
+
+const brokenRow = { name: 'broken', dir: 'broken', file: '/x/broken.md', flat: true, bytes: 10, description: '', problems: ['name is missing', 'description is required'], modelInvocable: true, userInvocable: true }
+const invalidCheck = reconcileSkills({ onDisk: [brokenRow], catalog: [], complete: true })
+check('self-check: bad frontmatter is its own status, not "missing"', invalidCheck.rows[0].status === 'invalid' && invalidCheck.diagnosis.code === 'invalid-entries', JSON.stringify(invalidCheck.rows[0]))
+
+// The registry's invocation policy beats our reading of the frontmatter, because
+// it is the value the `skill` tool actually obeys.
+const withRegistryPolicy = reconcileSkills({
+  onDisk: [{ name: 'grilling', dir: 'grilling', file: '/x', flat: false, bytes: 1, description: 'd', problems: [], modelInvocable: false, userInvocable: false }],
+  catalog: [{ name: 'grilling', description: 'd', source: 'custom', provider: 'developer-workbench-skills', invocation: { modelInvocable: true, userInvocable: true } }],
+  complete: true,
+})
+check('self-check: the registry policy overrides the parsed frontmatter', withRegistryPolicy.rows[0].modelInvocable === true)
+
+// Flat files at the root of a scanned directory are skills too.
+const flatFixture = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-wb-flat-'))
+fs.writeFileSync(path.join(flatFixture, 'broken.md'), '# no frontmatter here\n', 'utf8')
+fs.mkdirSync(path.join(flatFixture, 'good-skill'), { recursive: true })
+fs.writeFileSync(path.join(flatFixture, 'good-skill', 'SKILL.md'), '---\nname: good-skill\ndescription: fine\n---\n\nbody\n', 'utf8')
+const flatInventory = readSkillInventory(flatFixture)
+check('self-check: a flat .md without frontmatter is reported, not ignored', flatInventory.some((row) => row.name === 'broken' && row.flat === true && row.problems.length > 0), JSON.stringify(flatInventory.map((row) => [row.name, row.problems])))
+check('self-check: a well-formed directory skill is accepted', flatInventory.some((row) => row.name === 'good-skill' && row.problems.length === 0))
+check('self-check: a CRLF directory skill is classified correctly', readSkillInventory(path.join(PLUGIN_DIR, 'skills')).find((row) => row.name === 'handoff')?.modelInvocable === false)
+fs.rmSync(flatFixture, { recursive: true, force: true })
+
 // ── 2. host routes ────────────────────────────────────────────────────────────
 
 /** Directories this run created, removed at the end. */
@@ -929,6 +1017,22 @@ if (CLIENT_ONLY) {
     // The CRLF truncation bug dropped the LAST frontmatter key, which is exactly
     // where this flag sits for most upstream skills. Pin it so it cannot regress.
     check('disable-model-invocation is read from the last frontmatter line', skills.skills.find((row) => row.name === 'handoff')?.modelInvocable === false)
+
+    // ── skill self-check: what the registry really exposes ───────────────────
+    const repoRoot = path.resolve(HERE, '..', '..')
+    const selfCheck = await getJson(`/api/developer-workbench/skills/status?path=${encodeURIComponent(repoRoot)}`)
+    check('self-check route: the catalog is readable', selfCheck.state === 'ready', `${selfCheck.state}/${selfCheck.reason?.code ?? ''}`)
+    check('self-check route: discovery completed, so an absence would mean something', selfCheck.complete === true, String(selfCheck.complete))
+    check('self-check route: every bundled skill is really in the DSH catalog', selfCheck.counts.total === EXPECTED_TOTAL && selfCheck.counts.discovered === EXPECTED_TOTAL, JSON.stringify(selfCheck.counts))
+    check('self-check route: the model/human split matches the frontmatter', selfCheck.counts.modelInvocable === EXPECTED_MODEL_INVOCABLE && selfCheck.counts.humanOnly === EXPECTED_TOTAL - EXPECTED_MODEL_INVOCABLE, JSON.stringify(selfCheck.counts))
+    check('self-check route: a healthy catalog is diagnosed as ok', selfCheck.diagnosis.code === 'ok', selfCheck.diagnosis.code)
+    check('self-check route: every row carries an explicit status', selfCheck.rows.every((row) => ['discovered', 'not-discovered', 'invalid', 'unknown'].includes(row.status)))
+    check('self-check route: the rows name our own provider', selfCheck.rows.some((row) => row.registryProvider === 'developer-workbench-skills'), String(selfCheck.rows[0]?.registryProvider))
+    check('self-check route: other skills DSH sees are listed separately, never mixed in', Array.isArray(selfCheck.otherSkills) && selfCheck.otherSkills.every((row) => !selfCheck.rows.some((own) => own.name === row.name)), String(selfCheck.otherSkills.length))
+    // The two failure modes must stay distinguishable over the wire.
+    check('self-check route: a broken row would be invalid, not missing', selfCheck.rows.every((row) => row.status !== 'invalid' || row.problems.length > 0))
+    const statusNoPath = await fetch(`${BASE}/api/developer-workbench/skills/status`)
+    check('self-check route: no path still answers, for a catalog without a project', statusNoPath.status === 200, `HTTP ${statusNoPath.status}`)
 
     // ── probe: git overview against a real repository ────────────────────────
     const repo = makeGitFixture()

@@ -102,6 +102,127 @@ export function describeSkill(dir, text) {
 }
 
 /**
+ * The provider name this plugin registers its bundled skills under.
+ * Kept here so the self-check can tell our skills apart from a project's own.
+ */
+export const SKILL_PROVIDER_NAME = 'developer-workbench-skills'
+
+/**
+ * Reconcile what the package ships against what DSH's catalog actually exposes.
+ *
+ * This is the whole point of the self-check: the plugin's `skills/` directory
+ * being present proves nothing about whether a session can load them. The
+ * registry is what the `skill` tool reads, so the registry is what decides.
+ *
+ * The two failure modes are different and must not be conflated:
+ *
+ *   - **on disk, not in the catalog** — discovery is not reaching the package
+ *     (the desktop-profile failure this plugin was built against);
+ *   - **on disk, in the catalog, but with bad frontmatter** — DSH skips it
+ *     silently, so it looks present while being unloadable.
+ *
+ * @param options - reconciliation inputs.
+ * @param options.onDisk - rows from {@link readSkillInventory}.
+ * @param options.catalog - `SkillSummary[]` from `ctx.skills.snapshot()`.
+ * @param options.complete - whether that snapshot finished discovering.
+ * @returns the reconciled self-check payload.
+ */
+export function reconcileSkills({ onDisk, catalog, complete = true }) {
+  const byName = new Map((Array.isArray(catalog) ? catalog : []).map((entry) => [entry.name, entry]))
+
+  const rows = onDisk.map((row) => {
+    const entry = byName.get(row.name) ?? null
+    const status = row.problems.length > 0
+      ? 'invalid'
+      : entry !== null
+        ? 'discovered'
+        : 'not-discovered'
+    return {
+      name: row.name,
+      dir: row.dir,
+      file: row.file,
+      bytes: row.bytes,
+      description: row.description,
+      problems: row.problems,
+      status,
+      // The registry's policy wins when we have it: it is the value the `skill`
+      // tool actually obeys, rather than our reading of the frontmatter.
+      modelInvocable: entry === null ? row.modelInvocable : entry.invocation?.modelInvocable !== false,
+      userInvocable: entry === null ? row.userInvocable : entry.invocation?.userInvocable !== false,
+      registrySource: entry?.source ?? null,
+      registryProvider: entry?.provider ?? null,
+    }
+  })
+
+  const shipped = new Set(rows.map((row) => row.name))
+  const otherSkills = (Array.isArray(catalog) ? catalog : [])
+    .filter((entry) => !shipped.has(entry.name))
+    .map((entry) => ({
+      name: entry.name,
+      description: entry.description,
+      source: entry.source,
+      provider: entry.provider,
+      modelInvocable: entry.invocation?.modelInvocable !== false,
+    }))
+
+  const counts = {
+    total: rows.length,
+    discovered: rows.filter((row) => row.status === 'discovered').length,
+    notDiscovered: rows.filter((row) => row.status === 'not-discovered').length,
+    invalid: rows.filter((row) => row.status === 'invalid').length,
+    modelInvocable: rows.filter((row) => row.modelInvocable).length,
+    humanOnly: rows.filter((row) => !row.modelInvocable).length,
+  }
+
+  return {
+    counts,
+    complete: complete !== false,
+    rows,
+    otherSkills,
+    diagnosis: diagnoseSkills({ counts, complete, rows }),
+  }
+}
+
+/**
+ * Say what is wrong and what to do about it, without doing it.
+ *
+ * The workbench does not edit a profile behind the user's back, so this reports
+ * and points; acting on it stays the user's call.
+ *
+ * @param options - `{ counts, complete, rows }`.
+ * @returns `{ code, hint }`.
+ */
+function diagnoseSkills({ counts, complete, rows }) {
+  if (complete === false) {
+    return {
+      code: 'discovery-incomplete',
+      hint: 'DSH 这次的技能发现没有跑完，所以「缺失」可能只是没读完。先重试，不要把不完整当成缺失。',
+    }
+  }
+  if (counts.invalid > 0) {
+    const names = rows.filter((row) => row.status === 'invalid').map((row) => row.name).join(', ')
+    return {
+      code: 'invalid-entries',
+      hint: `这些技能的 frontmatter 有问题，DSH 会静默跳过它们（看起来在，实际加载不了）：${names}。修好对应 SKILL.md 顶部的 frontmatter 再刷新。`,
+    }
+  }
+  if (counts.total > 0 && counts.discovered === 0) {
+    return {
+      code: 'none-discovered',
+      hint: '技能文件都在插件包里，但 DSH 的会话目录里一个都看不到 —— 也就是说 `skill` 工具加载不到它们。检查插件自己的 cordis.patch.yml 里那一行 skill-filesystem（providerName 为 developer-workbench-skills、customSkillDirs 指向包内 skills/）是否生效。这一行失效时，项目与用户技能根也会一起失效，所以先看它。',
+    }
+  }
+  if (counts.notDiscovered > 0) {
+    const names = rows.filter((row) => row.status === 'not-discovered').map((row) => row.name).join(', ')
+    return {
+      code: 'partially-discovered',
+      hint: `这些在磁盘上但没进目录：${names}。最常见的原因是技能目录是在会话运行中途才创建的，文件监听没挂上 —— 新开一个会话通常就好。`,
+    }
+  }
+  return { code: 'ok', hint: null }
+}
+
+/**
  * Read every skill bundled in a directory: one directory per skill, each with a
  * `SKILL.md`. Discovery in DSH is one level deep, which is why the vendored tree
  * is flat rather than mirroring the upstream grouping.
@@ -118,20 +239,45 @@ export function readSkillInventory(skillsDir) {
   }
   const rows = []
   for (const entry of entries) {
-    if (!entry.isDirectory()) continue
-    const file = path.join(skillsDir, entry.name, 'SKILL.md')
+    if (entry.isDirectory()) {
+      const file = path.join(skillsDir, entry.name, 'SKILL.md')
+      try {
+        const row = describeSkill(entry.name, fs.readFileSync(file, 'utf8'))
+        rows.push({ ...row, file, flat: false })
+      } catch (error) {
+        rows.push({
+          dir: entry.name,
+          file,
+          flat: false,
+          name: entry.name,
+          description: '',
+          modelInvocable: false,
+          userInvocable: false,
+          problems: [`SKILL.md is unreadable: ${String(error?.message ?? error)}`],
+        })
+      }
+      continue
+    }
+
+    // A flat `<name>.md` at the root of a scanned directory is a skill too. DSH
+    // skips one whose frontmatter is invalid, so the self-check has to see it —
+    // otherwise a broken flat file reads as "not shipped" instead of "broken".
+    if (!entry.isFile() || !entry.name.toLowerCase().endsWith('.md')) continue
+    const file = path.join(skillsDir, entry.name)
+    const base = entry.name.slice(0, -3)
     try {
-      const row = describeSkill(entry.name, fs.readFileSync(file, 'utf8'))
-      rows.push({ ...row, file })
+      const row = describeSkill(base, fs.readFileSync(file, 'utf8'))
+      rows.push({ ...row, file, flat: true })
     } catch (error) {
       rows.push({
-        dir: entry.name,
+        dir: base,
         file,
-        name: entry.name,
+        flat: true,
+        name: base,
         description: '',
         modelInvocable: false,
         userInvocable: false,
-        problems: [`SKILL.md is unreadable: ${String(error?.message ?? error)}`],
+        problems: [`file is unreadable: ${String(error?.message ?? error)}`],
       })
     }
   }

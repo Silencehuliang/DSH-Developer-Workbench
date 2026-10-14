@@ -141,8 +141,12 @@ window.__ModuleLoader__.load({
       skillsTotal: '共 {n} 个',
       skillsModel: '可被模型加载 {n} 个',
       skillsManual: '仅人工调用 {n} 个',
-      skillsHint: '带「仅人工」的技能设置了 disable-model-invocation，skill 工具加载不到；派发提示词会给出绝对路径让会话直接读取，两种方式都能跑通。',
-      selfCheckFailed: '技能自检暂不可用',
+      skillsDiscovered: 'DSH 看到 {n} 个',
+      skillsLoading: '正在读取技能自检…',
+      skillsUnavailable: '读不到 DSH 的技能目录',
+      skillsDiagnosis: '自检结论',
+      skillsOther: 'DSH 还看到 {n} 个别的技能',
+      skillsHint: '技能由插件包直接供给，不写进你的项目 —— 所以「项目里没有技能文件」是正常的，别去拷文件。带「仅人工」的技能设置了 disable-model-invocation，skill 工具加载不到；派发提示词会给出绝对路径，两条路都能跑通。',
     }
 
     const en = {
@@ -249,8 +253,12 @@ window.__ModuleLoader__.load({
       skillsTotal: '{n} total',
       skillsModel: '{n} model-loadable',
       skillsManual: '{n} human-only',
-      skillsHint: 'Skills marked human-only set disable-model-invocation, so the skill tool cannot load them. Dispatch prompts pass the absolute path instead, so both paths work.',
-      selfCheckFailed: 'Self-check unavailable',
+      skillsDiscovered: 'DSH sees {n}',
+      skillsLoading: 'Reading the skill self-check…',
+      skillsUnavailable: 'The DSH skill catalog could not be read',
+      skillsDiagnosis: 'Verdict',
+      skillsOther: 'DSH also sees {n} other skills',
+      skillsHint: 'The skills are served straight from the plugin package and never written into your project — so "the project has no skill files" is expected; do not go copying files. Skills marked human-only set disable-model-invocation, which the skill tool cannot load; dispatch prompts pass the absolute path, so both routes work.',
     }
 
     /** Tracker kinds a user may pick, in the order the picker shows them. */
@@ -840,54 +848,114 @@ window.__ModuleLoader__.load({
       )
     }
 
-    /** The right column's bundled-skill self-check. */
+    /**
+     * The right column: the bundled-skill self-check.
+     *
+     * It renders four different claims that must never be confused: the skill is
+     * there **and** DSH can see it; it is there but DSH cannot; it is there but
+     * its frontmatter is broken (DSH skips it silently); or the catalog itself
+     * could not be read, which is not a claim about the skills at all.
+     */
     function SkillGrid(props) {
-      const { inventory, t } = props
-      if (inventory === null || inventory === undefined) {
-        return h('p', { style: S.muted }, t('selfCheckFailed'))
+      const { status, t } = props
+      if (status === null || status === undefined) {
+        return h('p', { className: 'dw-skills', style: S.muted }, t('skillsLoading'))
       }
-      const rows = Array.isArray(inventory.skills) ? inventory.skills : []
-      const modelCount = rows.filter((row) => row.modelInvocable).length
-      return h(
-        'div',
-        { style: S.card, className: 'dw-skills' },
-        h('div', { style: S.sectionTitle }, t('skillsTitle')),
+
+      const counts = status.counts ?? {}
+      const rows = Array.isArray(status.rows) ? status.rows : []
+      const other = Array.isArray(status.otherSkills) ? status.otherSkills : []
+      const diagnosis = status.diagnosis ?? { code: 'ok', hint: null }
+
+      const out = [
+        h('div', { key: 'label', style: S.sectionTitle }, t('skillsTitle')),
         h(
           'div',
-          { style: S.counts },
-          h('span', { key: 'total', style: S.muted }, t('skillsTotal', { n: rows.length })),
-          h('span', { key: 'model', style: { color: 'var(--dsw-alias-state-success-primary)' } }, t('skillsModel', { n: modelCount })),
-          h('span', { key: 'manual', style: S.muted }, t('skillsManual', { n: rows.length - modelCount })),
+          { key: 'counts', style: S.counts },
+          h('span', { key: 'total', style: S.muted }, t('skillsTotal', { n: counts.total ?? 0 })),
+          h(
+            'span',
+            {
+              key: 'discovered',
+              style: { color: (counts.notDiscovered ?? 0) > 0 ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-state-success-primary)' },
+            },
+            t('skillsDiscovered', { n: counts.discovered ?? 0 }),
+          ),
+          h('span', { key: 'model', style: S.muted }, t('skillsModel', { n: counts.modelInvocable ?? 0 })),
+          h('span', { key: 'human', style: S.muted }, t('skillsManual', { n: counts.humanOnly ?? 0 })),
         ),
+      ]
+
+      if (status.state !== undefined && status.state !== 'ready') {
+        out.push(
+          h(BoardNotice, {
+            key: 'unavailable',
+            tone: 'warn',
+            title: t('skillsUnavailable'),
+            detail: status.reason?.message ?? null,
+          }),
+        )
+      }
+      if (diagnosis.code !== 'ok' && diagnosis.hint !== null && diagnosis.hint !== undefined) {
+        out.push(
+          h(BoardNotice, {
+            key: 'diagnosis',
+            tone: diagnosis.code === 'none-discovered' || diagnosis.code === 'invalid-entries' ? 'error' : 'warn',
+            title: t('skillsDiagnosis'),
+            detail: diagnosis.hint,
+          }),
+        )
+      }
+
+      out.push(
         h(
           'div',
-          { style: S.grid },
-          rows.map((row) =>
-            h(
+          { key: 'grid', style: S.grid },
+          rows.map((row) => {
+            const tone = row.status === 'discovered'
+              ? row.modelInvocable
+                ? 'var(--dsw-alias-state-success-primary)'
+                : 'var(--dsw-alias-label-secondary)'
+              : row.status === 'invalid'
+                ? 'var(--dsw-alias-state-error-primary)'
+                : 'var(--dsw-alias-state-warn-primary)'
+            return h(
               'div',
-              { key: row.name, className: 'dw-skill', style: S.skillChip },
+              { key: row.name, className: `dw-skill dw-skill-${row.status}`, style: S.skillChip },
               h(
                 'div',
                 { style: { display: 'flex', alignItems: 'baseline', gap: 6 } },
                 h('span', { style: S.skillName }, row.name),
                 h(
                   'span',
-                  {
-                    style: {
-                      ...S.chip,
-                      marginLeft: 'auto',
-                      color: row.modelInvocable ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-label-secondary)',
-                    },
-                  },
-                  row.modelInvocable ? 'model' : 'human',
+                  { style: { ...S.chip, marginLeft: 'auto', color: tone, borderColor: tone } },
+                  row.status === 'discovered' ? (row.modelInvocable ? 'model' : 'human') : row.status,
                 ),
               ),
-              h('p', { style: S.skillDesc }, row.description),
+              h('p', { style: S.skillDesc }, row.problems.length > 0 ? row.problems.join('; ') : row.description),
+            )
+          }),
+        ),
+      )
+
+      if (other.length > 0) {
+        out.push(
+          h(
+            'div',
+            { key: 'other', style: { marginTop: 11 } },
+            h('div', { style: { ...S.muted, fontSize: 10.5, marginBottom: 5 } }, t('skillsOther', { n: other.length })),
+            h(
+              'div',
+              { style: { display: 'flex', flexWrap: 'wrap', gap: 5 } },
+              other.map((row) => h('span', { key: row.name, style: S.chip, title: `${row.source} / ${row.provider}` }, row.name)),
             ),
           ),
-        ),
-        h('p', { style: { ...S.bannerBody, marginTop: 11 } }, t('skillsHint')),
-      )
+        )
+      }
+
+      out.push(h('p', { key: 'hint', style: { ...S.bannerBody, marginTop: 11 } }, t('skillsHint')))
+
+      return h('div', { className: 'dw-skills', style: S.card }, out)
     }
 
     /** One step of the pipeline. */
@@ -1423,7 +1491,7 @@ window.__ModuleLoader__.load({
     function WorkbenchPage(props) {
       const t = typeof props?.t === 'function' ? props.t : makeTranslate(zh)
       const [overview, setOverview] = useState(null)
-      const [inventory, setInventory] = useState(null)
+      const [skillStatus, setSkillStatus] = useState(null)
       const [error, setError] = useState(null)
       const [pending, setPending] = useState(null)
       const [busy, setBusy] = useState(false)
@@ -1444,14 +1512,10 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         let cancelled = false
         setError(null)
-        Promise.all([
-          getJson(`${ROUTE_BASE}/overview`),
-          getJson(`${ROUTE_BASE}/skills`).catch(() => null),
-        ])
-          .then(([nextOverview, nextInventory]) => {
+        getJson(`${ROUTE_BASE}/overview`)
+          .then((nextOverview) => {
             if (cancelled) return
             setOverview(nextOverview)
-            setInventory(nextInventory)
           })
           .catch((nextError) => {
             if (cancelled) return
@@ -1526,6 +1590,26 @@ window.__ModuleLoader__.load({
           })
           .catch(() => {
             if (!cancelled) setStageInfo(null)
+          })
+        return () => {
+          cancelled = true
+        }
+      }, [activePath, attempt])
+
+      // The skill self-check is project-scoped: DSH resolves the catalog against
+      // the project's cwd, so a project with its own skills reports them too.
+      useEffect(() => {
+        let cancelled = false
+        setSkillStatus(null)
+        const url = activePath === null
+          ? `${ROUTE_BASE}/skills/status`
+          : `${ROUTE_BASE}/skills/status?path=${encodeURIComponent(activePath)}`
+        getJson(url)
+          .then((next) => {
+            if (!cancelled) setSkillStatus(next)
+          })
+          .catch(() => {
+            if (!cancelled) setSkillStatus(null)
           })
         return () => {
           cancelled = true
@@ -1785,7 +1869,7 @@ window.__ModuleLoader__.load({
             'div',
             { style: S.colLast },
             h(ArtifactGroups, { scan: artifacts, t, selectedPath: preview?.item?.path ?? null, onOpen: openArtifact }),
-            h(SkillGrid, { inventory, t }),
+            h(SkillGrid, { status: skillStatus, t }),
           ),
         ),
       )

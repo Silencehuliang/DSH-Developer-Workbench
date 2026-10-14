@@ -16,7 +16,7 @@ import { describeProject, probeDirectory } from './projects.js'
 import { PROMPT_STAGES, buildDispatchPrompt, readTriageLabels } from './prompts.js'
 import { STAGES, deriveStage } from './stage.js'
 import { analyseBoard, createCommandRunner, readGitHubTickets, readLocalTickets, resolveGitHubRepo } from './tickets.js'
-import { readSkillInventory } from './skills.js'
+import { readSkillInventory, reconcileSkills } from './skills.js'
 import { projectKey } from './state.js'
 import { TRACKER_KINDS, TRACKER_LABELS, resolveTracker } from './tracker.js'
 
@@ -616,5 +616,70 @@ export function buildRoutes({ ctx, store, info, now = () => new Date(), run = cr
     },
   }
 
-  return [health, skills, overview, probe, artifacts, artifact, tickets, stage, prompt, bind, setTracker, setStage, unbind]
+  const skillStatus = {
+    kind: 'exact',
+    path: `${ROUTE_BASE}/skills/status`,
+    handler: async (req, res) => {
+      try {
+        const target = queryParam(req, 'path')
+        const cwd = target === null ? undefined : path.resolve(target)
+        const onDisk = readSkillInventory(info.skillsDir)
+
+        /**
+         * The payload shape when the catalog cannot be consulted at all.
+         *
+         * Rows come back `unknown`, never `not-discovered`: "I could not look" is
+         * a different claim from "I looked and it was not there", and conflating
+         * them is exactly the failure this surface exists to prevent.
+         */
+        const unavailable = (code, message) => ({
+          state: 'unavailable',
+          reason: { code, message },
+          complete: null,
+          counts: {
+            total: onDisk.length,
+            discovered: 0,
+            notDiscovered: onDisk.length,
+            invalid: onDisk.filter((row) => row.problems.length > 0).length,
+            modelInvocable: onDisk.filter((row) => row.modelInvocable).length,
+            humanOnly: onDisk.filter((row) => !row.modelInvocable).length,
+          },
+          rows: onDisk.map((row) => ({ ...row, status: 'unknown' })),
+          otherSkills: [],
+          diagnosis: {
+            code: 'catalog-unavailable',
+            hint: '读不到 DSH 的技能目录，所以无法判断这些技能到底能不能被会话加载 —— 这不等于是「缺失」。',
+          },
+        })
+
+        const service = typeof ctx.get === 'function' ? ctx.get('skills') : undefined
+        if (service === undefined) {
+          sendJson(res, 200, unavailable('skills-service-missing', 'the host skill registry is not available in this composition'))
+          return
+        }
+
+        let snapshot
+        try {
+          snapshot = await service.snapshot(cwd === undefined ? {} : { cwd })
+        } catch (error) {
+          sendJson(res, 200, unavailable('snapshot-failed', String(error?.message ?? error)))
+          return
+        }
+
+        sendJson(res, 200, {
+          state: 'ready',
+          cwd: cwd ?? null,
+          ...reconcileSkills({
+            onDisk,
+            catalog: snapshot?.skills ?? [],
+            complete: snapshot?.complete !== false,
+          }),
+        })
+      } catch (error) {
+        fail(res, 500, error)
+      }
+    },
+  }
+
+  return [health, skills, skillStatus, overview, probe, artifacts, artifact, tickets, stage, prompt, bind, setTracker, setStage, unbind]
 }
