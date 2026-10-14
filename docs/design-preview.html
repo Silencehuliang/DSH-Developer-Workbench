@@ -503,11 +503,11 @@
             <span style="font-size:17px">▶</span>
             <div class="txt">
               <b>下一步：拆 tracer-bullet 工单</b>
-              <span>依据：spec 已存在 · <code class="mono">.scratch/</code> 下还没有工单</span>
+              <span>依据：spec 已存在 · 项目 tracker 里还没有工单</span>
             </div>
             <button class="btn">派发 to-tickets</button>
           </div>
-          <h4>工单看板 <span style="font-family:var(--mono);color:var(--fg3);text-transform:none">.scratch/workbench-v1/issues</span></h4>
+          <h4>工单看板 <span style="font-family:var(--mono);color:var(--fg3);text-transform:none">tracker: GitHub Issues</span></h4>
           <div class="tk ready">
             <span class="no">01</span>
             <div class="bd">
@@ -560,7 +560,7 @@
     <li><span class="n">1</span><span><b>左栏即工作区。</b>显示分支、脏文件数、当前阶段徽章、活跃会话数；「绑定本地项目」把还没注册的目录登记成工作区，而不是另起一套登记表。</span></li>
     <li><span class="n">2</span><span><b>阶段条可解释。</b>每一步都标出「凭什么判断到这里」，鼠标悬停给出依据文件路径；已完成的打勾，当前的蓝底高亮。</span></li>
     <li><span class="n">3</span><span><b>「下一步」是唯一主动作。</b>它旁边永远写清依据和将要调用的技能，不让工作台变成一个要你猜的按钮墙。</span></li>
-    <li><span class="n">4</span><span><b>工单看板直接解析 markdown。</b>读 <code>.scratch/&lt;feature&gt;/issues/NN-*.md</code> 的标题、Blocked by、Status 和验收项勾选，标出「可开工」的 frontier。</span></li>
+    <li><span class="n">4</span><span><b>工单看板跟着项目走，不是全局设置。</b>每个项目的 tracker 是<b>它自己的属性</b>：绑定项目时读该项目自己的 <code>docs/agents/issue-tracker.md</code>，读到就直接采用（不提问），读不到才让你选，结果落进工作台的<b>本地映射</b>。解析优先级永远是 <b>项目声明 → 本地映射 → 全局默认</b>，所以同一个工作台里 A 项目用 GitHub、B 项目用本地 markdown 都是正常的。</span></li>
     <li><span class="n">5</span><span><b>技能自检是你点名要的。</b>每个技能一格，缺哪一项一眼看出；这里也是诊断「技能不被 DSH 发现」问题的窗口。</span></li>
   </ul>
 </section>
@@ -578,7 +578,7 @@
         <tr><td><b>setup</b><span class="chip" style="margin-left:6px">一次性</span></td><td>项目里没有 tracker 声明</td><td class="mono">setup-matt-pocock-skills</td><td>确定 issue tracker、triage 标签词汇、领域文档布局，之后所有阶段都按这套约定走</td></tr>
         <tr><td><b>grill</b></td><td>还没有 spec 产物</td><td class="mono">grilling · grill-with-docs</td><td>对方案做一轮拷问，顺手产出 ADR 与术语表，把没想清的地方逼出来</td></tr>
         <tr><td><b>spec</b></td><td>没有成稿的 spec</td><td class="mono">to-spec</td><td>把对话综合成 spec 并发布到 tracker，不做二次访谈</td></tr>
-        <tr><td><b>tickets</b></td><td><code>.scratch/&lt;feature&gt;/issues/</code> 为空</td><td class="mono">to-tickets</td><td>拆成 tracer-bullet 垂直切片，每单一个文件并声明 Blocked by 依赖边</td></tr>
+        <tr><td><b>tickets</b></td><td>项目 tracker 里没有工单</td><td class="mono">to-tickets</td><td>拆成 tracer-bullet 垂直切片，每单一个 issue 并声明阻塞依赖边</td></tr>
         <tr><td><b>implement</b></td><td>存在未完成工单 → 取 frontier</td><td class="mono">implement · implement-spec · tdd</td><td>实现「所有阻塞都已解除」的那张工单；测试优先时叠加 tdd</td></tr>
         <tr><td><b>review</b></td><td>工单全部完成，无评审记录</td><td class="mono">code-review</td><td>按「规范」与「是否实现 spec」两条轴并行走查，并排给出结论</td></tr>
         <tr><td><b>pr</b></td><td>评审通过</td><td class="mono">pr</td><td>撰写 PR 正文</td></tr>
@@ -629,10 +629,10 @@
 
 基于 docs/specs/workbench-v1.md 把工作拆成 tracer-bullet 工单：
 - 每个切片要垂直贯穿各层，单独可验证
-- 按依赖顺序编号，写在 .scratch/workbench-v1/issues/NN-<slug>.md
-- 每单声明 Blocked by，并列出验收项
+- 按依赖顺序在 tracker 上建 issue，每单声明被谁阻塞
+- 每单列出验收项
 
-tracker：本地文件（.scratch/）
+tracker：GitHub Issues（来自项目自己的声明，见 docs/agents/issue-tracker.md）
 triage 标签：ready-for-agent
 完成后回报工单清单与依赖边。</textarea>
       </div>
@@ -921,7 +921,7 @@ triage 标签：ready-for-agent
       <div class="bd">
         <b>不碰你的既有项目</b>
         <p>你要求不参考本地已有项目（如 <code>dsh-graph</code>、<code>dsh-workflow-kernel</code>），我按此执行。</p>
-        <div class="fx"><b>边界：</b>工作台只读写「被绑定项目」的 <code>.agents/skills</code>、<code>.scratch/</code>，以及它自己的状态文件；对项目的写入全部走显式确认。</div>
+        <div class="fx"><b>边界：</b>工作台只读写「被绑定项目」的 <code>.agents/skills</code>、项目自己的 tracker 声明、以及它自己的状态文件（含 tracker 本地映射）；对项目的写入全部走显式确认。</div>
       </div>
     </div>
   </div>

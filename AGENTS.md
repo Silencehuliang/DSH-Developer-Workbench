@@ -30,6 +30,7 @@ node plugin/scripts/verify.mjs
 - **技能只发现一层**：`<root>/<name>/SKILL.md`。别把技能放进子目录。
 - **`skills/` 顶层不要放没有 frontmatter 的 `.md`** —— 顶层 `<name>.md` 会被当成技能，缺 frontmatter 会被静默跳过。
 - **前端颜色一律用主题 token**（`--dsw-alias-*`、`--dsh-frame-top-clearance`），不要写死。
+- **tracker 是「项目」的属性，不是工作台的全局设置。** 解析优先级固定为：项目自己的 `docs/agents/issue-tracker.md` → 工作台的 per-project 本地映射 → 全局默认兜底。绑定项目时初始化（读到就采用、不提问；读不到才问用户），结果落进本地映射，之后以映射为准。同一个工作台里 A 项目用 GitHub、B 项目用本地 markdown 是正常的 —— **永远不要把某个项目的选择提升成工作台默认值**。
 - **不要修改 `plugin/skills/` 里的技能正文**：那是 Matt Pocock 的上游内容（MIT）。本地适配另开目录。
 
 ## 已知坑（踩过，别再踩）
