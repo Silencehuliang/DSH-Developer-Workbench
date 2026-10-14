@@ -247,6 +247,64 @@ check('skill grid names every skill', skillText.includes('grilling') && skillTex
 check('skill grid separates model-loadable from human-only', skillText.includes('model') && skillText.includes('human'))
 check('skill grid degrades when the self-check is unavailable', renderText(seam.SkillGrid({ inventory: null, t: zhT })).join(' ').includes('技能自检暂不可用'))
 
+// Artifacts: grouping, preview, and every refusal keeping its own words.
+const artifactScan = {
+  groups: [
+    { id: 'spec', label: 'Specs and plans', items: [{ name: '.scratch/feat/spec.md', path: '/tmp/a/.scratch/feat/spec.md', bytes: 2048, mtime: '2026-10-14T06:00:00.000Z' }] },
+    { id: 'adr', label: 'ADRs', items: [{ name: 'docs/adr/0001-first.md', path: '/tmp/a/docs/adr/0001-first.md', bytes: 512, mtime: '2026-10-14T05:00:00.000Z' }] },
+  ],
+}
+const groupsText = renderText(seam.ArtifactGroups({ scan: artifactScan, t: zhT, selectedPath: null, onOpen: () => {} })).join(' | ')
+check('artifact list renders every group by its host-given label', groupsText.includes('Specs and plans') && groupsText.includes('ADRs'))
+check('artifact list names each document', groupsText.includes('.scratch/feat/spec.md') && groupsText.includes('docs/adr/0001-first.md'))
+check('artifact list shows size and modification time', groupsText.includes('2 KB') && groupsText.includes('2026-10-14'))
+check('artifact list shows an empty state, not an empty heading', renderText(seam.ArtifactGroups({ scan: { groups: [] }, t: zhT, onOpen: () => {} })).join(' ').includes('这个项目还没有'))
+check('artifact list says it is scanning while the scan is pending', renderText(seam.ArtifactGroups({ scan: null, t: zhT, onOpen: () => {} })).join(' ').includes('正在扫描产物'))
+
+check('preview renders nothing when no document is selected', seam.ArtifactPreview({ preview: null, t: zhT }) === null)
+const readyPreview = renderText(seam.ArtifactPreview({
+  preview: { status: 'ready', item: { path: '/tmp/a/long.md' }, result: { ok: true, lines: ['line 1', 'line 2'], totalLines: 50, hasMore: true, bytes: 10 } },
+  t: zhT,
+  onLoadMore: () => {},
+  onClose: () => {},
+})).join(' | ')
+check('preview renders the file body', readyPreview.includes('line 1') && readyPreview.includes('line 2'))
+check('preview shows how much of the file is shown', readyPreview.includes('2 / 50'))
+check('preview offers more when the file continues', readyPreview.includes('还剩 48 行'))
+const endPreview = renderText(seam.ArtifactPreview({
+  preview: { status: 'ready', item: { path: '/tmp/a/short.md' }, result: { ok: true, lines: ['only'], totalLines: 1, hasMore: false, bytes: 5 } },
+  t: zhT,
+  onLoadMore: () => {},
+  onClose: () => {},
+})).join(' | ')
+check('preview says so at the end of the file', endPreview.includes('已到文件末尾'))
+
+const refusalCases = [
+  { code: 'binary', text: '二进制' },
+  { code: 'not-utf8', text: 'UTF-8' },
+  { code: 'missing', text: '文件不存在' },
+  { code: 'not-a-file', text: '普通文件' },
+]
+for (const refusal of refusalCases) {
+  const text = renderText(seam.ArtifactPreview({
+    preview: { status: 'refused', item: { path: '/tmp/a/x' }, code: refusal.code, result: {}, message: 'host detail' },
+    t: zhT,
+    onLoadMore: () => {},
+    onClose: () => {},
+  })).join(' | ')
+  check(`preview refusal "${refusal.code}" explains itself`, text.includes(refusal.text))
+}
+const tooLargeText = renderText(seam.ArtifactPreview({
+  preview: { status: 'refused', item: { path: '/tmp/a/huge.md' }, code: 'too-large', result: { bytes: 614400, maxFileBytes: 524288 }, message: 'too big' },
+  t: zhT,
+  onLoadMore: () => {},
+  onClose: () => {},
+})).join(' | ')
+check('preview refusal "too-large" quotes both sizes', tooLargeText.includes('600 KB') && tooLargeText.includes('512 KB'))
+
+check('byte formatting is readable', seam.formatBytes(512) === '512 B' && seam.formatBytes(2048) === '2 KB' && seam.formatBytes(1024 * 1024 * 3) === '3.0 MB')
+check('time formatting is locale-stable', /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(seam.formatWhen('2026-10-14T06:00:00.000Z')))
+
 // Both dictionaries must define the same keys, or one language renders raw keys.
 const zhKeys = Object.keys(seam.dicts.zh).sort()
 const enKeys = Object.keys(seam.dicts.en).sort()
@@ -414,6 +472,71 @@ if (CLIENT_ONLY) {
 
     const noPath = await fetch(`${BASE}/api/developer-workbench/probe`)
     check('probe: a missing path parameter is a 400', noPath.status === 400, `HTTP ${noPath.status}`)
+
+    // ── artifacts: discovery by convention ───────────────────────────────────
+    const artProject = tempDir('dsh-wb-art-')
+    fs.mkdirSync(path.join(artProject, 'docs', 'adr'), { recursive: true })
+    fs.writeFileSync(path.join(artProject, 'docs', 'adr', '0001-first.md'), '# 0001\n\nA decision.\n', 'utf8')
+    fs.mkdirSync(path.join(artProject, 'docs', 'specs'), { recursive: true })
+    fs.writeFileSync(path.join(artProject, 'docs', 'specs', 'thing.md'), '# Spec\n', 'utf8')
+    fs.writeFileSync(path.join(artProject, 'GLOSSARY.md'), '# Glossary\n\nA term.\n', 'utf8')
+    fs.mkdirSync(path.join(artProject, '.scratch', 'feat'), { recursive: true })
+    fs.writeFileSync(path.join(artProject, '.scratch', 'feat', 'spec.md'), '# Local spec\n', 'utf8')
+    fs.writeFileSync(path.join(artProject, '.scratch', 'feat', 'map.md'), '# Map\n', 'utf8')
+
+    const artScan = await getJson(`/api/developer-workbench/artifacts?path=${encodeURIComponent(artProject)}`)
+    const groupIds = artScan.groups.map((group) => group.id)
+    check('artifacts: groups are discovered by convention', groupIds.includes('spec') && groupIds.includes('adr') && groupIds.includes('glossary'), JSON.stringify(groupIds))
+    check('artifacts: no handoff group while none is recorded', groupIds.includes('handoff') === false, JSON.stringify(groupIds))
+    const specNames = artScan.groups.find((group) => group.id === 'spec').items.map((item) => item.name)
+    // The local-markdown tracker keeps its spec and its wayfinder map under .scratch.
+    check('artifacts: the .scratch spec and map are both found', specNames.includes('.scratch/feat/spec.md') && specNames.includes('.scratch/feat/map.md'), JSON.stringify(specNames))
+    check('artifacts: docs/specs is found too', specNames.includes('docs/specs/thing.md'), JSON.stringify(specNames))
+    check('artifacts: every item carries name, bytes and mtime', artScan.groups.every((group) => group.items.every((item) => typeof item.name === 'string' && typeof item.bytes === 'number' && typeof item.mtime === 'string')))
+
+    const emptyProject = tempDir('dsh-wb-empty-')
+    const emptyScan = await getJson(`/api/developer-workbench/artifacts?path=${encodeURIComponent(emptyProject)}`)
+    check('artifacts: an empty project yields no groups at all', emptyScan.groups.length === 0, String(emptyScan.groups.length))
+    const absentScan = await getJson(`/api/developer-workbench/artifacts?path=${encodeURIComponent(missing)}`)
+    check('artifacts: an absent project yields no groups instead of failing', absentScan.groups.length === 0)
+
+    const noPathArtifacts = await fetch(`${BASE}/api/developer-workbench/artifacts`)
+    check('artifacts: a missing path parameter is a 400', noPathArtifacts.status === 400, `HTTP ${noPathArtifacts.status}`)
+
+    // ── artifacts: read-only preview ─────────────────────────────────────────
+    const smallFile = path.join(artProject, 'docs', 'adr', '0001-first.md')
+    const preview = await getJson(`/api/developer-workbench/artifact?path=${encodeURIComponent(smallFile)}`)
+    check('artifact preview: returns the file body', preview.ok === true && preview.lines.join('\n').includes('A decision.'), JSON.stringify(preview.lines))
+    check('artifact preview: reports that nothing follows', preview.hasMore === false && typeof preview.totalLines === 'number', JSON.stringify({ hasMore: preview.hasMore, total: preview.totalLines }))
+
+    const longFile = path.join(artProject, 'long.md')
+    fs.writeFileSync(longFile, Array.from({ length: 50 }, (_, index) => `line ${index + 1}`).join('\n'), 'utf8')
+    const firstPage = await getJson(`/api/developer-workbench/artifact?path=${encodeURIComponent(longFile)}&limit=10&offset=0`)
+    check('artifact preview: pages instead of truncating silently', firstPage.lines.length === 10 && firstPage.hasMore === true && firstPage.totalLines === 50, JSON.stringify({ lines: firstPage.lines.length, hasMore: firstPage.hasMore, total: firstPage.totalLines }))
+    const laterPage = await getJson(`/api/developer-workbench/artifact?path=${encodeURIComponent(longFile)}&limit=10&offset=40`)
+    check('artifact preview: a later page is the requested window', laterPage.lines[0] === 'line 41' && laterPage.hasMore === false, String(laterPage.lines[0]))
+
+    const binaryFile = path.join(artProject, 'blob.bin')
+    fs.writeFileSync(binaryFile, Buffer.from([0x00, 0x01, 0x02, 0x00]))
+    const binaryResponse = await fetch(`${BASE}/api/developer-workbench/artifact?path=${encodeURIComponent(binaryFile)}`)
+    const binaryBody = await binaryResponse.json()
+    check('artifact preview: binary is refused with a reason', binaryResponse.status === 415 && binaryBody.code === 'binary', `HTTP ${binaryResponse.status} ${binaryBody.code}`)
+
+    const badUtf8 = path.join(artProject, 'bad.md')
+    fs.writeFileSync(badUtf8, Buffer.from([0xff, 0xfe, 0xfd]))
+    const badResponse = await fetch(`${BASE}/api/developer-workbench/artifact?path=${encodeURIComponent(badUtf8)}`)
+    const badBody = await badResponse.json()
+    check('artifact preview: invalid UTF-8 is refused, never mojibake', badResponse.status === 415 && badBody.code === 'not-utf8', `HTTP ${badResponse.status} ${badBody.code}`)
+
+    const absentResponse = await fetch(`${BASE}/api/developer-workbench/artifact?path=${encodeURIComponent(missing)}`)
+    const absentBody = await absentResponse.json()
+    check('artifact preview: a missing file is a 404 with a reason', absentResponse.status === 404 && absentBody.code === 'missing', `HTTP ${absentResponse.status} ${absentBody.code}`)
+
+    const hugeFile = path.join(artProject, 'huge.md')
+    fs.writeFileSync(hugeFile, 'x'.repeat(600 * 1024), 'utf8')
+    const hugeResponse = await fetch(`${BASE}/api/developer-workbench/artifact?path=${encodeURIComponent(hugeFile)}`)
+    const hugeBody = await hugeResponse.json()
+    check('artifact preview: an oversized file is refused, never silently cut', hugeResponse.status === 413 && hugeBody.code === 'too-large' && hugeBody.maxFileBytes === 512 * 1024, `HTTP ${hugeResponse.status} ${hugeBody.code}`)
 
     // ── overview ─────────────────────────────────────────────────────────────
     const overview = await getJson('/api/developer-workbench/overview')

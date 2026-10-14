@@ -69,6 +69,21 @@ window.__ModuleLoader__.load({
       choose: '就用这个',
       stageUnknown: '阶段待接入',
       stageBody: '项目列表已经接上真实数据。下一步是工单看板与阶段推导。',
+      artifacts: '产物',
+      artifactsLoading: '正在扫描产物…',
+      artifactsEmpty: '这个项目还没有 spec / ADR / 术语表。',
+      artifactOpen: '预览',
+      previewTitle: '只读预览',
+      previewClose: '关闭',
+      previewMore: '载入更多（还剩 {n} 行）',
+      previewEnd: '已到文件末尾',
+      previewProgress: '已显示 {shown} / {total} 行',
+      previewRefused: '无法预览',
+      previewBinary: '这是二进制文件，不做文本预览。',
+      previewTooLarge: '文件 {bytes} 字节，超过 {max} 字节的预览上限。',
+      previewNotUtf8: '文件不是合法的 UTF-8 文本。',
+      previewMissing: '文件不存在，可能已被删除或移动。',
+      previewNotAFile: '这不是一个普通文件。',
       skillsTitle: 'Matt Pocock 技能自检',
       skillsTotal: '共 {n} 个',
       skillsModel: '可被模型加载 {n} 个',
@@ -109,6 +124,21 @@ window.__ModuleLoader__.load({
       choose: 'Use this',
       stageUnknown: 'Stage arrives next',
       stageBody: 'The project list is wired to real data. Next are the ticket board and stage derivation.',
+      artifacts: 'Artifacts',
+      artifactsLoading: 'Scanning artifacts…',
+      artifactsEmpty: 'This project has no spec, ADR or glossary yet.',
+      artifactOpen: 'Preview',
+      previewTitle: 'Read-only preview',
+      previewClose: 'Close',
+      previewMore: 'Load more ({n} lines left)',
+      previewEnd: 'End of file',
+      previewProgress: 'showing {shown} / {total} lines',
+      previewRefused: 'Cannot preview',
+      previewBinary: 'This is a binary file, so there is no text preview.',
+      previewTooLarge: 'The file is {bytes} bytes, above the {max}-byte preview limit.',
+      previewNotUtf8: 'The file is not valid UTF-8 text.',
+      previewMissing: 'The file does not exist; it may have been deleted or moved.',
+      previewNotAFile: 'That path is not a regular file.',
       skillsTitle: 'Matt Pocock skill self-check',
       skillsTotal: '{n} total',
       skillsModel: '{n} model-loadable',
@@ -149,6 +179,23 @@ window.__ModuleLoader__.load({
       return (key, params) => translate(dict, key, params)
     }
 
+    /** Short local timestamp for a list row. */
+    function formatWhen(iso) {
+      if (typeof iso !== 'string' || iso.length === 0) return '—'
+      const when = new Date(iso)
+      if (Number.isNaN(when.getTime())) return '—'
+      const pad = (value) => String(value).padStart(2, '0')
+      return `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())} ${pad(when.getHours())}:${pad(when.getMinutes())}`
+    }
+
+    /** Compact byte count for a list row. */
+    function formatBytes(bytes) {
+      if (typeof bytes !== 'number' || !Number.isFinite(bytes)) return '—'
+      if (bytes < 1024) return `${bytes} B`
+      if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`
+      return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+    }
+
     /**
      * Fetch one JSON route and fail loudly on a non-2xx response.
      * @param url - absolute path.
@@ -158,6 +205,22 @@ window.__ModuleLoader__.load({
       const response = await fetch(url, { headers: { accept: 'application/json' } })
       if (!response.ok) throw new Error(`${url} → HTTP ${response.status}`)
       return await response.json()
+    }
+
+    /**
+     * Fetch one JSON route without throwing, so a refusal keeps its own reason.
+     * @param url - absolute path.
+     * @returns `{ ok, status, body }`.
+     */
+    async function requestJson(url) {
+      const response = await fetch(url, { headers: { accept: 'application/json' } })
+      let body = null
+      try {
+        body = await response.json()
+      } catch (error) {
+        body = null
+      }
+      return { ok: response.ok, status: response.status, body }
     }
 
     /**
@@ -219,6 +282,7 @@ window.__ModuleLoader__.load({
         padding: '9px 11px',
         marginBottom: 7,
       },
+      rowActive: { borderColor: 'var(--dsw-alias-brand-primary)', background: 'var(--dsw-alias-bg-layer-2)' },
       rowHead: { display: 'flex', alignItems: 'baseline', gap: 7 },
       rowTitle: { fontSize: 13, fontWeight: 600, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
       meta: { display: 'flex', gap: 9, flexWrap: 'wrap', marginTop: 5, fontSize: 11, color: 'var(--dsw-alias-label-secondary)' },
@@ -282,13 +346,42 @@ window.__ModuleLoader__.load({
       },
       counts: { display: 'flex', gap: 12, fontSize: 11.6, marginBottom: 10, flexWrap: 'wrap' },
       picker: { display: 'grid', gap: 6, marginTop: 9 },
+      groupLabel: { fontSize: 10.5, color: 'var(--dsw-alias-label-secondary)', margin: '9px 0 5px', fontWeight: 600 },
+      artifact: {
+        display: 'flex',
+        alignItems: 'baseline',
+        gap: 7,
+        padding: '5px 7px',
+        borderRadius: 7,
+        cursor: 'pointer',
+        fontSize: 11.6,
+        color: 'var(--dsw-alias-label-primary)',
+      },
+      artifactName: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' },
+      artifactMeta: { marginLeft: 'auto', fontSize: 10, color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'nowrap' },
+      pre: {
+        margin: 0,
+        padding: '12px 14px',
+        background: 'var(--dsw-alias-bg-layer-2)',
+        border: '1px solid var(--dsw-alias-border-l1)',
+        borderRadius: 10,
+        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+        fontSize: 11.6,
+        lineHeight: 1.6,
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+        maxHeight: '58vh',
+        overflow: 'auto',
+      },
+      previewHead: { display: 'flex', alignItems: 'baseline', gap: 9, marginBottom: 9, flexWrap: 'wrap' },
+      previewPath: { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', fontSize: 11.4, color: 'var(--dsw-alias-label-secondary)', minWidth: 0, wordBreak: 'break-all' },
     }
 
     /**
      * Human text for a git overview result.
      * @param git - the overview from the host.
      * @param t - translate function.
-     * @returns the text to show.
+     * @returns the text to show, or null when there is a healthy repository.
      */
     function describeGit(git, t) {
       if (git?.ok !== true) {
@@ -303,7 +396,7 @@ window.__ModuleLoader__.load({
      * Label for where a tracker resolution came from.
      * @param source - the resolution source.
      * @param t - translate function.
-     * @returns the label.
+     * @returns the label, or null when the source is unknown.
      */
     function describeTrackerSource(source, t) {
       if (source === 'project-declaration') return t('trackerSourceDeclaration')
@@ -311,6 +404,29 @@ window.__ModuleLoader__.load({
       if (source === 'user-choice') return t('trackerSourceUser')
       if (source === 'global-default') return t('trackerSourceDefault')
       return null
+    }
+
+    /**
+     * Localized reason for a refused preview, so the UI never shows mojibake or
+     * a document that merely looks complete.
+     * @param code - the refusal code from the host.
+     * @param result - the refusal payload.
+     * @param t - translate function.
+     * @returns the sentence to show.
+     */
+    function describeRefusal(code, result, t) {
+      if (code === 'binary') return t('previewBinary')
+      if (code === 'too-large') {
+        return translate(
+          { text: t('previewTooLarge') },
+          'text',
+          { bytes: formatBytes(result?.bytes), max: formatBytes(result?.maxFileBytes) },
+        )
+      }
+      if (code === 'not-utf8') return t('previewNotUtf8')
+      if (code === 'missing') return t('previewMissing')
+      if (code === 'not-a-file') return t('previewNotAFile')
+      return t('previewRefused')
     }
 
     // ── pure components (the rendering seam tests exercise) ──────────────────
@@ -342,7 +458,7 @@ window.__ModuleLoader__.load({
 
     /** One project row in the left column. */
     function ProjectRow(props) {
-      const { project, t, onUnbind } = props
+      const { project, t, onUnbind, onSelect, active } = props
       const gitNote = describeGit(project.git, t)
       const meta = []
 
@@ -389,7 +505,10 @@ window.__ModuleLoader__.load({
                 type: 'button',
                 className: 'dw-unbind',
                 style: S.button,
-                onClick: () => onUnbind(project),
+                onClick: (event) => {
+                  if (typeof event?.stopPropagation === 'function') event.stopPropagation()
+                  onUnbind(project)
+                },
               },
               t('unbind'),
             ),
@@ -397,16 +516,25 @@ window.__ModuleLoader__.load({
         )
       }
 
-      return h('div', { key: project.key, className: 'dw-project', style: S.row }, children)
+      return h(
+        'div',
+        {
+          key: project.key,
+          className: active === true ? 'dw-project dw-project-active' : 'dw-project',
+          style: active === true ? { ...S.row, ...S.rowActive } : S.row,
+          onClick: typeof onSelect === 'function' ? () => onSelect(project) : undefined,
+        },
+        children,
+      )
     }
 
     /** The left column: the project list, plus whatever the caller adds below it. */
     function ProjectList(props) {
-      const { projects, t, onUnbind, children } = props
+      const { projects, t, onUnbind, onSelect, activeKey, children } = props
       const rows = Array.isArray(projects) ? projects : []
       const body = rows.length === 0
         ? [h('p', { key: 'empty', style: S.muted }, t('noProjects'))]
-        : rows.map((project) => h(ProjectRow, { key: project.key, project, t, onUnbind }))
+        : rows.map((project) => h(ProjectRow, { key: project.key, project, t, onUnbind, onSelect, active: project.key === activeKey }))
       return h(
         'div',
         { className: 'dw-projects' },
@@ -416,7 +544,109 @@ window.__ModuleLoader__.load({
       )
     }
 
-    /** The right column: the bundled-skill self-check. */
+    /** The right column's artifact list, grouped the way the host grouped them. */
+    function ArtifactGroups(props) {
+      const { scan, t, selectedPath, onOpen } = props
+      if (scan === null || scan === undefined) {
+        return h('p', { style: S.muted }, t('artifactsLoading'))
+      }
+      const groups = Array.isArray(scan.groups) ? scan.groups : []
+      if (groups.length === 0) {
+        return h(
+          'div',
+          { className: 'dw-artifacts' },
+          h('div', { style: S.sectionTitle }, t('artifacts')),
+          h('p', { style: S.muted }, t('artifactsEmpty')),
+        )
+      }
+      return h(
+        'div',
+        { className: 'dw-artifacts' },
+        h('div', { style: S.sectionTitle }, t('artifacts')),
+        ...groups.map((group) =>
+          h(
+            'div',
+            { key: group.id, className: `dw-group dw-group-${group.id}` },
+            h('div', { style: S.groupLabel }, group.label),
+            ...group.items.map((item) =>
+              h(
+                'div',
+                {
+                  key: item.path,
+                  className: 'dw-artifact',
+                  title: item.path,
+                  style: item.path === selectedPath
+                    ? { ...S.artifact, background: 'var(--dsw-alias-bg-layer-2)' }
+                    : S.artifact,
+                  onClick: () => onOpen(item),
+                },
+                h('span', { style: S.artifactName }, item.name),
+                h('span', { style: S.artifactMeta }, `${formatBytes(item.bytes)} · ${formatWhen(item.mtime)}`),
+              ),
+            ),
+          ),
+        ),
+      )
+    }
+
+    /** The center column's read-only artifact preview. */
+    function ArtifactPreview(props) {
+      const { preview, t, onLoadMore, onClose } = props
+      if (preview === null || preview === undefined) return null
+
+      const item = preview.item
+      const head = [
+        h('span', { key: 'title', style: S.bannerTitle }, t('previewTitle')),
+        h('span', { key: 'path', style: S.previewPath }, item?.path ?? ''),
+        h(
+          'button',
+          { key: 'close', type: 'button', className: 'dw-preview-close', style: { ...S.button, marginLeft: 'auto' }, onClick: onClose },
+          t('previewClose'),
+        ),
+      ]
+
+      if (preview.status === 'loading') {
+        return h('div', { className: 'dw-preview', style: S.card }, h('div', { style: S.previewHead }, head), h('p', { style: S.muted }, t('loading')))
+      }
+
+      if (preview.status === 'refused') {
+        return h(
+          'div',
+          { className: 'dw-preview dw-preview-refused', style: { ...S.card, borderColor: 'var(--dsw-alias-state-warn-primary)' } },
+          h('div', { style: S.previewHead }, head),
+          h('p', { style: { ...S.bannerBody, color: 'var(--dsw-alias-state-warn-primary)' } }, describeRefusal(preview.code, preview.result, t)),
+          h('p', { style: { ...S.bannerBody, marginTop: 5, opacity: 0.8 } }, preview.message ?? ''),
+        )
+      }
+
+      const result = preview.result
+      const shown = result.lines.length
+      const footer = []
+      footer.push(
+        h('span', { key: 'progress', style: S.muted }, t('previewProgress', { shown, total: result.totalLines })),
+      )
+      if (result.hasMore === true) {
+        footer.push(
+          h(
+            'button',
+            { key: 'more', type: 'button', className: 'dw-preview-more', style: S.button, onClick: onLoadMore },
+            t('previewMore', { n: result.totalLines - shown }),
+          ),
+        )
+      } else {
+        footer.push(h('span', { key: 'end', style: S.muted }, t('previewEnd')))
+      }
+
+      return h(
+        'div',
+        { className: 'dw-preview', style: S.card },
+        h('div', { style: S.previewHead }, head),
+        h('pre', { className: 'dw-preview-body', style: S.pre }, result.lines.join('\n')),
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: 10, marginTop: 10 } }, footer),
+      )
+    }
+
+    /** The right column's bundled-skill self-check. */
     function SkillGrid(props) {
       const { inventory, t } = props
       if (inventory === null || inventory === undefined) {
@@ -468,13 +698,18 @@ window.__ModuleLoader__.load({
 
     /** The middle column's placeholder until the stage derivation lands. */
     function StagePanel(props) {
-      const { t } = props
+      const { t, project } = props
       return h(
         'div',
         { className: 'dw-stage' },
         h('h1', { style: S.h1 }, t('title')),
         h('p', { style: S.lead }, t('subtitle')),
-        h('div', { style: S.banner }, h('div', { style: S.bannerTitle }, t('stageUnknown')), h('p', { style: S.bannerBody }, t('stageBody'))),
+        h(
+          'div',
+          { style: S.banner },
+          h('div', { style: S.bannerTitle }, project === null || project === undefined ? t('stageUnknown') : project.title),
+          h('p', { style: S.bannerBody }, t('stageBody')),
+        ),
       )
     }
 
@@ -538,6 +773,9 @@ window.__ModuleLoader__.load({
       const [pending, setPending] = useState(null)
       const [busy, setBusy] = useState(false)
       const [attempt, setAttempt] = useState(0)
+      const [activeKey, setActiveKey] = useState(null)
+      const [artifacts, setArtifacts] = useState(null)
+      const [preview, setPreview] = useState(null)
 
       useEffect(() => {
         let cancelled = false
@@ -560,7 +798,65 @@ window.__ModuleLoader__.load({
         }
       }, [attempt])
 
+      const projects = overview?.projects ?? []
+      const activeProject = projects.find((row) => row.key === activeKey) ?? projects[0] ?? null
+      const activePath = activeProject === null ? null : activeProject.path
+
+      useEffect(() => {
+        if (activePath === null) {
+          setArtifacts(null)
+          return undefined
+        }
+        let cancelled = false
+        setArtifacts(null)
+        setPreview(null)
+        getJson(`${ROUTE_BASE}/artifacts?path=${encodeURIComponent(activePath)}`)
+          .then((next) => {
+            if (!cancelled) setArtifacts(next)
+          })
+          .catch(() => {
+            // A project whose artifacts cannot be scanned is not an error worth a
+            // banner: the group simply has nothing to show.
+            if (!cancelled) setArtifacts({ groups: [] })
+          })
+        return () => {
+          cancelled = true
+        }
+      }, [activePath, attempt])
+
       const reload = useCallback(() => setAttempt((value) => value + 1), [])
+
+      const openArtifact = useCallback(async (item) => {
+        setPreview({ status: 'loading', item })
+        const response = await requestJson(`${ROUTE_BASE}/artifact?path=${encodeURIComponent(item.path)}`)
+        if (response.ok === true) {
+          setPreview({ status: 'ready', item, result: response.body })
+          return
+        }
+        setPreview({
+          status: 'refused',
+          item,
+          code: response.body?.code ?? 'unknown',
+          result: response.body,
+          message: response.body?.message ?? `HTTP ${response.status}`,
+        })
+      }, [])
+
+      const loadMore = useCallback(async () => {
+        if (preview?.status !== 'ready') return
+        const loaded = preview.result.lines.length
+        const response = await requestJson(
+          `${ROUTE_BASE}/artifact?path=${encodeURIComponent(preview.item.path)}&offset=${loaded}`,
+        )
+        if (response.ok !== true) return
+        setPreview({
+          status: 'ready',
+          item: preview.item,
+          result: { ...response.body, lines: [...preview.result.lines, ...response.body.lines] },
+        })
+      }, [preview])
+
+      const closeArtifact = useCallback(() => setPreview(null), [])
 
       const onBind = useCallback(async () => {
         if (typeof props?.pickDirectory !== 'function') return
@@ -610,8 +906,10 @@ window.__ModuleLoader__.load({
       const left = h(
         ProjectList,
         {
-          projects: overview?.projects ?? [],
+          projects,
           t,
+          activeKey: activeProject?.key ?? null,
+          onSelect: (project) => setActiveKey(project.key),
           onUnbind,
           children: h(
             'div',
@@ -638,7 +936,9 @@ window.__ModuleLoader__.load({
           )
         : overview === null
           ? h('p', { style: S.muted }, t('loading'))
-          : h(StagePanel, { t })
+          : preview !== null
+            ? h(ArtifactPreview, { preview, t, onLoadMore: loadMore, onClose: closeArtifact })
+            : h(StagePanel, { t, project: activeProject })
 
       return h(
         'div',
@@ -648,7 +948,12 @@ window.__ModuleLoader__.load({
           { style: S.columns },
           h('div', { style: S.col }, left),
           h('div', { style: S.col }, middle),
-          h('div', { style: S.colLast }, h(SkillGrid, { inventory, t })),
+          h(
+            'div',
+            { style: S.colLast },
+            h(ArtifactGroups, { scan: artifacts, t, selectedPath: preview?.item?.path ?? null, onOpen: openArtifact }),
+            h(SkillGrid, { inventory, t }),
+          ),
         ),
       )
     }
@@ -724,7 +1029,25 @@ window.__ModuleLoader__.load({
     exports.PANEL_ID = PANEL_ID
     exports.NS = NS
     /** Rendering seam for `scripts/verify.mjs`; not part of the plugin contract. */
-    exports.__test = { WorkbenchPage, ProjectList, ProjectRow, TrackerChip, TrackerPicker, SkillGrid, StagePanel, describeGit, describeTrackerSource, translate, TRACKER_CHOICES, dicts: { zh, en } }
+    exports.__test = {
+      WorkbenchPage,
+      ProjectList,
+      ProjectRow,
+      TrackerChip,
+      TrackerPicker,
+      ArtifactGroups,
+      ArtifactPreview,
+      SkillGrid,
+      StagePanel,
+      describeGit,
+      describeTrackerSource,
+      describeRefusal,
+      formatWhen,
+      formatBytes,
+      translate,
+      TRACKER_CHOICES,
+      dicts: { zh, en },
+    }
 
     return module.exports
   },

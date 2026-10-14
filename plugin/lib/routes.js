@@ -11,6 +11,7 @@
 
 import path from 'node:path'
 
+import { readArtifactPreview, scanArtifacts } from './artifacts.js'
 import { describeProject, probeDirectory } from './projects.js'
 import { readSkillInventory } from './skills.js'
 import { projectKey } from './state.js'
@@ -317,5 +318,63 @@ export function buildRoutes({ ctx, store, info, now = () => new Date() }) {
     },
   }
 
-  return [health, skills, overview, probe, bind, setTracker, unbind]
+  const artifacts = {
+    kind: 'exact',
+    path: `${ROUTE_BASE}/artifacts`,
+    handler: (req, res) => {
+      try {
+        const target = queryParam(req, 'path')
+        if (target === null) {
+          sendJson(res, 400, { error: 'path is required' })
+          return
+        }
+        const resolved = path.resolve(target)
+        // Handoffs live in the OS temp directory by the upstream skill's design,
+        // so the only way to attribute one to a project is the workbench's own
+        // record. An empty list simply means no handoff has been produced yet.
+        const record = store.get(projectKey(resolved))
+        sendJson(res, 200, scanArtifacts(resolved, { handoffs: record?.handoffs ?? [] }))
+      } catch (error) {
+        fail(res, 500, error)
+      }
+    },
+  }
+
+  const artifact = {
+    kind: 'exact',
+    path: `${ROUTE_BASE}/artifact`,
+    handler: (req, res) => {
+      try {
+        const target = queryParam(req, 'path')
+        if (target === null) {
+          sendJson(res, 400, { error: 'path is required' })
+          return
+        }
+        const offset = queryParam(req, 'offset')
+        const limit = queryParam(req, 'limit')
+        const result = readArtifactPreview(target, {
+          offset: offset === null ? undefined : Number.parseInt(offset, 10),
+          limit: limit === null ? undefined : Number.parseInt(limit, 10),
+        })
+        if (!result.ok) {
+          // Refusals carry their own reason; mapping them onto statuses keeps the
+          // difference between "absent" and "I will not show you this" visible.
+          const status = result.code === 'missing'
+            ? 404
+            : result.code === 'too-large'
+              ? 413
+              : result.code === 'not-a-file'
+                ? 400
+                : 415
+          sendJson(res, status, result)
+          return
+        }
+        sendJson(res, 200, result)
+      } catch (error) {
+        fail(res, 500, error)
+      }
+    },
+  }
+
+  return [health, skills, overview, probe, artifacts, artifact, bind, setTracker, unbind]
 }
