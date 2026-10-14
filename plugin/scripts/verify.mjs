@@ -111,6 +111,7 @@ function exerciseClientBundle() {
       fn()
       return () => {}
     },
+    get: () => undefined,
     locale: {
       register: (ns, dicts) => {
         localeRegistrations.push({ ns, dicts })
@@ -159,6 +160,98 @@ check('uses declaration-aware slots.inject for both', client.slotPeeks.includes(
 
 const icon = panelRow?.component?.({ size: 16, active: true })
 check('icon renders a sized glyph', icon !== undefined && icon.props?.width === 16)
+
+// ── 1b. client rendering over fixture data ────────────────────────────────────
+
+console.log('\nclient rendering')
+
+const seam = client.plugin.__test
+
+/**
+ * Render an element tree to the list of strings it would show.
+ *
+ * The stub React returns plain objects, so function components are invoked here
+ * by hand. That is the whole point of splitting the page into pure components:
+ * rendered output is assertable without a browser or a reconciler.
+ *
+ * @param node - an element returned by the stub `createElement`.
+ * @returns every text node, flattened.
+ */
+function renderText(node) {
+  if (node === null || node === undefined || typeof node === 'boolean') return []
+  if (typeof node === 'string' || typeof node === 'number') return [String(node)]
+  if (Array.isArray(node)) return node.flatMap(renderText)
+  if (typeof node.type === 'function') {
+    const props = { ...(node.props ?? {}) }
+    if (props.children === undefined && node.children !== undefined) props.children = node.children
+    return renderText(node.type(props))
+  }
+  const kids = node.props?.children !== undefined ? node.props.children : node.children
+  return renderText(kids)
+}
+
+const zhT = (key, params) => seam.translate(seam.dicts.zh, key, params)
+
+const fixtureProjects = [
+  {
+    key: 'a',
+    workspaceId: 'ws-a',
+    title: 'Developer Workbench',
+    path: '/tmp/a',
+    directoryStatus: 'ok',
+    sessionCount: 3,
+    git: { ok: true, isRepo: true, branch: 'main', dirtyCount: 2, lastCommit: 'abc123\tinitial' },
+    tracker: { kind: 'github', label: 'GitHub Issues', source: 'project-declaration' },
+  },
+  {
+    key: 'b',
+    workspaceId: 'ws-b',
+    title: 'Goal Dashboard',
+    path: '/tmp/b',
+    directoryStatus: 'ok',
+    sessionCount: 1,
+    git: { ok: false, isRepo: false, reason: 'not-a-git-work-tree' },
+    tracker: null,
+  },
+]
+
+const listText = renderText(seam.ProjectList({ projects: fixtureProjects, t: zhT })).join(' | ')
+check('project list renders every project title', listText.includes('Developer Workbench') && listText.includes('Goal Dashboard'))
+check('project list shows the git branch and dirty count', listText.includes('main') && listText.includes('2'))
+check('project list shows the session count', listText.includes('3') && listText.includes('1'))
+check('project list labels a non-repo instead of inventing a branch', listText.includes('不是 git 仓库'))
+check('project list shows a resolved tracker label', listText.includes('GitHub Issues'))
+check('project list flags an undecided tracker', listText.includes('tracker 未定'))
+check('project list badges the stage placeholder until derivation lands', listText.includes('阶段待接入'))
+check('project list shows the empty state when nothing is bound', renderText(seam.ProjectList({ projects: [], t: zhT })).join(' ').includes('还没有登记任何工作区'))
+check('project list survives a missing projects prop', renderText(seam.ProjectList({ t: zhT })) !== undefined)
+
+// The tracker chip must not claim a source it cannot name.
+const chipText = renderText(seam.TrackerChip({ tracker: fixtureProjects[0].tracker, t: zhT })).join(' ')
+check('tracker chip renders the tracker label', chipText.includes('GitHub Issues'))
+
+// Picker: absent, prompting, and conflicting.
+check('tracker picker renders nothing when there is no pending decision', seam.TrackerPicker({ pending: null, t: zhT, onChoose: () => {} }) === null)
+const promptText = renderText(seam.TrackerPicker({ pending: { path: '/tmp/b', conflict: null }, t: zhT, onChoose: () => {} })).join(' | ')
+check('tracker picker asks when the project declares nothing', promptText.includes('这个项目用哪个 tracker？'))
+check('tracker picker offers every tracker kind', seam.TRACKER_CHOICES.every((choice) => promptText.includes(choice.label)))
+const conflictText = renderText(seam.TrackerPicker({ pending: { path: '/tmp/b', conflict: { declaredKind: 'github', mappedKind: 'local-markdown' } }, t: zhT, onChoose: () => {} })).join(' | ')
+check('tracker picker surfaces a conflict instead of guessing', conflictText.includes('不一致') && conflictText.includes('github') && conflictText.includes('local-markdown'))
+
+// Skill grid.
+const skillText = renderText(seam.SkillGrid({ inventory: { skills: [
+  { name: 'grilling', description: 'grill', modelInvocable: true },
+  { name: 'to-tickets', description: 'tickets', modelInvocable: false },
+] }, t: zhT })).join(' | ')
+check('skill grid names every skill', skillText.includes('grilling') && skillText.includes('to-tickets'))
+check('skill grid separates model-loadable from human-only', skillText.includes('model') && skillText.includes('human'))
+check('skill grid degrades when the self-check is unavailable', renderText(seam.SkillGrid({ inventory: null, t: zhT })).join(' ').includes('技能自检暂不可用'))
+
+// Both dictionaries must define the same keys, or one language renders raw keys.
+const zhKeys = Object.keys(seam.dicts.zh).sort()
+const enKeys = Object.keys(seam.dicts.en).sort()
+check('zh and en dictionaries define identical key sets', zhKeys.length === enKeys.length && zhKeys.every((key, index) => key === enKeys[index]), `zh=${zhKeys.length} en=${enKeys.length}`)
+check('every rendered label is a real dictionary key', ['projects', 'noProjects', 'trackerUnknown', 'noGit', 'skillsTotal'].every((key) => key in seam.dicts.zh && key in seam.dicts.en))
 
 // ── 2. host routes ────────────────────────────────────────────────────────────
 
@@ -335,6 +428,15 @@ if (CLIENT_ONLY) {
 
     const unboundTracker = await postJson('/api/developer-workbench/projects/tracker', { path: bareProject, kind: 'github' })
     check('tracker: choosing a tracker needs a bound project first', unboundTracker.status === 404, `HTTP ${unboundTracker.status}`)
+
+    // Cross-half consistency: the picker's list must be a subset of what the host
+    // accepts, or the UI can offer a choice the host then refuses.
+    const kindAcceptance = []
+    for (const choice of seam.TRACKER_CHOICES) {
+      const result = await postJson('/api/developer-workbench/projects/tracker', { path: bareProject, kind: choice.kind })
+      kindAcceptance.push({ kind: choice.kind, status: result.status })
+    }
+    check('every tracker the picker offers is accepted by the host', kindAcceptance.every((row) => row.status !== 400), JSON.stringify(kindAcceptance))
 
     const bindMissingPath = await postJson('/api/developer-workbench/projects/bind', { path: missing })
     check('bind: a nonexistent directory is refused', bindMissingPath.status === 400, `HTTP ${bindMissingPath.status}`)
