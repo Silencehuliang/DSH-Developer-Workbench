@@ -13,6 +13,7 @@ import path from 'node:path'
 
 import { readArtifactPreview, scanArtifacts } from './artifacts.js'
 import { describeProject, probeDirectory } from './projects.js'
+import { PROMPT_STAGES, buildDispatchPrompt, readTriageLabels } from './prompts.js'
 import { STAGES, deriveStage } from './stage.js'
 import { analyseBoard, createCommandRunner, readGitHubTickets, readLocalTickets, resolveGitHubRepo } from './tickets.js'
 import { readSkillInventory } from './skills.js'
@@ -553,5 +554,67 @@ export function buildRoutes({ ctx, store, info, now = () => new Date(), run = cr
     },
   }
 
-  return [health, skills, overview, probe, artifacts, artifact, tickets, stage, bind, setTracker, setStage, unbind]
+  const prompt = {
+    kind: 'exact',
+    path: `${ROUTE_BASE}/prompt`,
+    handler: (req, res) => {
+      try {
+        const target = queryParam(req, 'path')
+        const stageId = queryParam(req, 'stage')
+        if (target === null || stageId === null) {
+          sendJson(res, 400, { error: 'path and stage are required' })
+          return
+        }
+        const entry = STAGES.find((stage) => stage.id === stageId)
+        if (entry === undefined) {
+          sendJson(res, 400, { error: `unknown stage: ${stageId}`, accepted: PROMPT_STAGES })
+          return
+        }
+
+        const resolved = path.resolve(target)
+        const record = store.get(projectKey(resolved)) ?? null
+        const tracker = resolveTracker({ projectPath: resolved, mapping: record?.tracker ?? null })
+        const board = boardFor(resolved, tracker)
+
+        // The implement step needs a subject. Default to the first startable
+        // ticket, which is the same answer the board gives.
+        let ticket = null
+        if (entry.id === 'implement') {
+          const wanted = queryParam(req, 'ticket') ?? (board.frontier ?? [])[0] ?? null
+          if (wanted !== null) ticket = (board.tickets ?? []).find((row) => row.id === String(wanted)) ?? null
+        }
+
+        const workspaces = registry()?.list() ?? []
+        const workspace = workspaces.find((candidate) => path.resolve(candidate.path) === resolved) ?? null
+        const title = workspace?.title ?? path.basename(resolved)
+
+        const built = buildDispatchPrompt({
+          stage: entry,
+          skillsDir: info.skillsDir,
+          tracker,
+          repository: board.repository ?? null,
+          project: { path: resolved, title },
+          ticket,
+          triageLabels: readTriageLabels(resolved),
+        })
+
+        sendJson(res, 200, {
+          ...built,
+          targets: {
+            // Either coordinate creates a session; workspaceId is preferred and
+            // cwd is the fallback for a directory that was never bound.
+            project: { path: resolved, title, workspaceId: workspace?.id ?? null },
+            tracker,
+            repository: board.repository ?? null,
+            ticket: ticket === null ? null : { id: ticket.id, title: ticket.title, url: ticket.url ?? null },
+            board: { state: board.state, frontier: board.frontier ?? [] },
+          },
+        })
+      } catch (error) {
+        fail(res, 500, error)
+      }
+    },
+  }
+
+  return [health, skills, overview, probe, artifacts, artifact, tickets, stage, prompt, bind, setTracker, setStage, unbind]
 }

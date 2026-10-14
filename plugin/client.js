@@ -88,6 +88,24 @@ window.__ModuleLoader__.load({
       stageReview: '评审',
       stagePr: '提 PR',
       stageRetro: '复盘',
+      dispatch: '派发',
+      dispatchTitle: '派发确认',
+      dispatchTarget: '目标工作区',
+      dispatchTicket: '目标工单',
+      dispatchSession: '目标会话',
+      dispatchNew: '新建会话',
+      dispatchExisting: '复用已有会话',
+      dispatchNoSessions: '这个项目还没有会话，只能新建。',
+      dispatchPrompt: '将发送的提示词（可编辑）',
+      dispatchSendNew: '新建会话并发送',
+      dispatchSendExisting: '在已有会话发送',
+      dispatchCopy: '复制提示词',
+      dispatchCopied: '已复制到剪贴板',
+      dispatchCancel: '取消',
+      dispatchSending: '发送中…',
+      dispatchFailed: '派发失败：{reason}',
+      dispatchBlocked: '这张单还有未解除的阻塞：{ids}',
+      dispatchPickSession: '先选一个会话',
       board: '工单看板',
       boardNeedsTracker: '这个项目的 tracker 还没定。先绑定项目并选择 tracker，看板才有东西可读。',
       boardUnsupported: '还没有 {kind} tracker 的适配器，所以这里不显示任何工单。',
@@ -178,6 +196,24 @@ window.__ModuleLoader__.load({
       stageReview: 'Review',
       stagePr: 'Pull request',
       stageRetro: 'Retro',
+      dispatch: 'Dispatch',
+      dispatchTitle: 'Confirm dispatch',
+      dispatchTarget: 'Target project',
+      dispatchTicket: 'Target ticket',
+      dispatchSession: 'Target session',
+      dispatchNew: 'New session',
+      dispatchExisting: 'Reuse a session',
+      dispatchNoSessions: 'This project has no sessions yet, so a new one is the only option.',
+      dispatchPrompt: 'Prompt to send (editable)',
+      dispatchSendNew: 'Create a session and send',
+      dispatchSendExisting: 'Send to the selected session',
+      dispatchCopy: 'Copy the prompt',
+      dispatchCopied: 'Copied to the clipboard',
+      dispatchCancel: 'Cancel',
+      dispatchSending: 'Sending…',
+      dispatchFailed: 'Dispatch failed: {reason}',
+      dispatchBlocked: 'This ticket still has unresolved blockers: {ids}',
+      dispatchPickSession: 'Pick a session first',
       board: 'Ticket board',
       boardNeedsTracker: 'This project has no tracker yet. Bind it and pick a tracker before the board can read anything.',
       boardUnsupported: 'There is no adapter for a {kind} tracker yet, so no tickets are shown.',
@@ -315,6 +351,51 @@ window.__ModuleLoader__.load({
       return parsed
     }
 
+    /**
+     * Render a failed `RemoteResult` as a sentence.
+     *
+     * Remote calls answer `{ ok: false, error }` rather than throwing, so every
+     * one of them has to be unwrapped explicitly — and a failure that produced no
+     * readable message must still read as a failure, not as silence.
+     *
+     * @param result - the result that failed.
+     * @param fallback - text to use when the failure carries nothing readable.
+     * @returns the message to show.
+     */
+    function describeRemoteFailure(result, fallback) {
+      const failure = result?.error
+      if (failure === null || failure === undefined) return fallback
+      if (typeof failure === 'string' && failure.length > 0) return failure
+      if (typeof failure.message === 'string' && failure.message.length > 0) return failure.message
+      if (typeof failure.code === 'string' && failure.code.length > 0) return `${fallback} (${failure.code})`
+      return fallback
+    }
+
+    /**
+     * Run one dispatch: create or choose a session, send the prompt, then navigate.
+     *
+     * Extracted from the component on purpose. The order and the refusals are the
+     * parts that would stay invisible until they broke: never navigate after a
+     * failed send, never create a session when one was chosen, never send without
+     * a target.
+     *
+     * @param operations - the injected side effects.
+     * @param request - `{ text, choice, project }`.
+     * @returns the session id the prompt went to.
+     */
+    async function performDispatch(operations, { text, choice, project }) {
+      let sessionId = choice
+      if (choice === 'new') {
+        if (typeof operations?.createSession !== 'function') throw new Error('session creation is unavailable')
+        sessionId = await operations.createSession(project ?? {})
+      }
+      if (typeof sessionId !== 'string' || sessionId.length === 0) throw new Error('no target session was chosen')
+      if (typeof operations?.sendPrompt !== 'function') throw new Error('sending a prompt is unavailable')
+      await operations.sendPrompt(sessionId, text)
+      if (typeof operations?.openSession === 'function') operations.openSession(sessionId)
+      return sessionId
+    }
+
     // ── shared style tokens ──────────────────────────────────────────────────
 
     const S = {
@@ -415,6 +496,20 @@ window.__ModuleLoader__.load({
         overflow: 'hidden',
       },
       counts: { display: 'flex', gap: 12, fontSize: 11.6, marginBottom: 10, flexWrap: 'wrap' },
+      textarea: {
+        width: '100%',
+        minHeight: 190,
+        boxSizing: 'border-box',
+        background: 'var(--dsw-alias-bg-base)',
+        color: 'var(--dsw-alias-label-primary)',
+        border: '1px solid var(--dsw-alias-border-l1)',
+        borderRadius: 8,
+        padding: '10px 12px',
+        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+        fontSize: 11.6,
+        lineHeight: 1.6,
+        resize: 'vertical',
+      },
       picker: { display: 'grid', gap: 6, marginTop: 9 },
       groupLabel: { fontSize: 10.5, color: 'var(--dsw-alias-label-secondary)', margin: '9px 0 5px', fontWeight: 600 },
       artifact: {
@@ -831,7 +926,7 @@ window.__ModuleLoader__.load({
      * plus the pin, which always shows the derivation it is overriding.
      */
     function StagePipeline(props) {
-      const { stage, t, onOverride, onClearOverride } = props
+      const { stage, t, onOverride, onClearOverride, onDispatch } = props
       if (stage === null || stage === undefined) return h('p', { style: S.muted }, t('loading'))
 
       const steps = Array.isArray(stage.stages) ? stage.stages : []
@@ -882,6 +977,19 @@ window.__ModuleLoader__.load({
           ? currentEntry.skill
           : `${currentEntry.skill} / ${currentEntry.alternative}`
         rows.push(h('div', { key: 'skill', style: { ...S.muted, marginTop: 8, fontSize: 11.6 } }, t('stageSkill', { skill })))
+        if (typeof onDispatch === 'function') {
+          rows.push(
+            h(
+              'div',
+              { key: 'dispatch', style: { marginTop: 10 } },
+              h(
+                'button',
+                { type: 'button', className: 'dw-dispatch-open', style: S.buttonPrimary, onClick: () => onDispatch(current) },
+                `${t('dispatch')} · ${currentEntry.skill}`,
+              ),
+            ),
+          )
+        }
       }
 
       for (const item of evidence) {
@@ -939,7 +1047,7 @@ window.__ModuleLoader__.load({
 
     /** The middle column: heading, then the stage pipeline. */
     function StagePanel(props) {
-      const { t, project, stage, onOverride, onClearOverride } = props
+      const { t, project, stage, onOverride, onClearOverride, onDispatch } = props
       return h(
         'div',
         { className: 'dw-stage' },
@@ -947,7 +1055,7 @@ window.__ModuleLoader__.load({
         h('p', { style: S.lead }, t('subtitle')),
         project === null || project === undefined
           ? h('p', { style: S.muted }, t('stageUnknown'))
-          : h(StagePipeline, { stage, t, onOverride, onClearOverride }),
+          : h(StagePipeline, { stage, t, onOverride, onClearOverride, onDispatch }),
       )
     }
 
@@ -1151,6 +1259,158 @@ window.__ModuleLoader__.load({
       )
     }
 
+    /**
+     * Short stand-in for a session id.
+     *
+     * The session list endpoint returns no title, so the picker shows a tail of
+     * the id rather than inventing a name it cannot know.
+     * @param sessionId - the full session id.
+     * @returns the last segment, truncated.
+     */
+    function shortSessionId(sessionId) {
+      const parts = String(sessionId ?? '').split('-')
+      const tail = parts[parts.length - 1] ?? ''
+      return tail.length > 8 ? tail.slice(0, 8) : tail
+    }
+
+    /**
+     * The dispatch confirmation.
+     *
+     * Fully controlled — the container owns the draft, the choice, and the busy
+     * state — which is what makes "what would be sent" assertable here without a
+     * network or a reconciler.
+     */
+    function DispatchDialog(props) {
+      const { prompt, draft, choice, sessions, busy, error, notice, t, onDraft, onChoice, onSend, onCopy, onClose } = props
+      if (prompt === null || prompt === undefined) return null
+
+      const targets = prompt.targets ?? {}
+      const project = targets.project ?? {}
+      const ticket = targets.ticket ?? null
+      const rows = []
+
+      rows.push(
+        h(
+          'div',
+          { key: 'head', style: { display: 'flex', alignItems: 'baseline', gap: 9, marginBottom: 12 } },
+          h('div', { style: { ...S.bannerTitle, marginBottom: 0 } }, `${t('dispatchTitle')} · ${prompt.skill}`),
+          h('button', { key: 'close', type: 'button', className: 'dw-dispatch-close', style: { ...S.button, marginLeft: 'auto' }, onClick: onClose }, t('dispatchCancel')),
+        ),
+      )
+
+      rows.push(
+        h(
+          'div',
+          { key: 'target', style: { marginBottom: 10 } },
+          h('div', { style: { ...S.muted, fontSize: 10.5 } }, t('dispatchTarget')),
+          h('div', { style: { fontSize: 12.4 } }, project.title ?? '—'),
+          h('div', { style: { ...S.mono, fontSize: 11, color: 'var(--dsw-alias-label-secondary)', wordBreak: 'break-all' } }, project.path ?? ''),
+        ),
+      )
+
+      if (ticket !== null) {
+        rows.push(
+          h(
+            'div',
+            { key: 'ticket', style: { marginBottom: 10 } },
+            h('div', { style: { ...S.muted, fontSize: 10.5 } }, t('dispatchTicket')),
+            h('div', { style: { fontSize: 12.4 } }, `#${ticket.id} ${ticket.title}`),
+          ),
+        )
+      }
+
+      const sessionControls = [
+        h(
+          'button',
+          {
+            key: 'new',
+            type: 'button',
+            className: choice === 'new' ? 'dw-choice-new dw-choice-on' : 'dw-choice-new',
+            style: choice === 'new' ? S.buttonPrimary : S.button,
+            onClick: () => onChoice?.('new'),
+          },
+          t('dispatchNew'),
+        ),
+      ]
+      const sessionList = Array.isArray(sessions) ? sessions : []
+      if (sessionList.length === 0) {
+        sessionControls.push(h('span', { key: 'none', style: { ...S.muted, fontSize: 11 } }, t('dispatchNoSessions')))
+      } else {
+        for (const session of sessionList) {
+          const active = choice === session.sessionId
+          sessionControls.push(
+            h(
+              'button',
+              {
+                key: session.sessionId,
+                type: 'button',
+                className: active ? 'dw-choice-session dw-choice-on' : 'dw-choice-session',
+                style: active ? S.buttonPrimary : S.button,
+                title: session.sessionId,
+                onClick: () => onChoice?.(session.sessionId),
+              },
+              `${shortSessionId(session.sessionId)}${session.running === true ? ' · running' : ''}`,
+            ),
+          )
+        }
+      }
+      rows.push(
+        h(
+          'div',
+          { key: 'session', style: { marginBottom: 10 } },
+          h('div', { style: { ...S.muted, fontSize: 10.5, marginBottom: 5 } }, t('dispatchSession')),
+          h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 5, alignItems: 'center' } }, sessionControls),
+        ),
+      )
+
+      rows.push(
+        h(
+          'div',
+          { key: 'prompt' },
+          h('div', { style: { ...S.muted, fontSize: 10.5, marginBottom: 5 } }, t('dispatchPrompt')),
+          h('textarea', {
+            className: 'dw-dispatch-text',
+            spellCheck: 'false',
+            value: draft,
+            onChange: (event) => onDraft?.(event?.target?.value ?? ''),
+            style: S.textarea,
+          }),
+        ),
+      )
+
+      if (error !== null && error !== undefined) {
+        rows.push(
+          h('p', { key: 'error', style: { ...S.bannerBody, marginTop: 10, color: 'var(--dsw-alias-state-error-primary)' } }, t('dispatchFailed', { reason: error })),
+        )
+      }
+      if (notice !== null && notice !== undefined) {
+        rows.push(h('p', { key: 'notice', style: { ...S.muted, marginTop: 10 } }, notice))
+      }
+
+      const reusing = typeof choice === 'string' && choice !== 'new'
+      rows.push(
+        h(
+          'div',
+          { key: 'actions', style: { display: 'flex', gap: 7, marginTop: 13, alignItems: 'center', flexWrap: 'wrap' } },
+          h('button', { key: 'copy', type: 'button', className: 'dw-dispatch-copy', style: S.button, onClick: () => onCopy?.(draft) }, t('dispatchCopy')),
+          h(
+            'button',
+            {
+              key: 'send',
+              type: 'button',
+              className: 'dw-dispatch-send',
+              style: S.buttonPrimary,
+              disabled: busy === true,
+              onClick: () => onSend?.(draft, choice),
+            },
+            busy === true ? t('dispatchSending') : reusing ? t('dispatchSendExisting') : t('dispatchSendNew'),
+          ),
+        ),
+      )
+
+      return h('div', { className: 'dw-dispatch', style: { ...S.card, borderColor: 'var(--dsw-alias-brand-primary)' } }, rows)
+    }
+
     // ── container ────────────────────────────────────────────────────────────
 
     /**
@@ -1173,6 +1433,13 @@ window.__ModuleLoader__.load({
       const [preview, setPreview] = useState(null)
       const [board, setBoard] = useState(null)
       const [stageInfo, setStageInfo] = useState(null)
+      const [dispatchRequest, setDispatchRequest] = useState(null)
+      const [dispatchDraft, setDispatchDraft] = useState('')
+      const [dispatchChoice, setDispatchChoice] = useState('new')
+      const [dispatchSessions, setDispatchSessions] = useState([])
+      const [dispatchBusy, setDispatchBusy] = useState(false)
+      const [dispatchError, setDispatchError] = useState(null)
+      const [dispatchNotice, setDispatchNotice] = useState(null)
 
       useEffect(() => {
         let cancelled = false
@@ -1327,6 +1594,75 @@ window.__ModuleLoader__.load({
         }
       }, [activePath, props, reload])
 
+      /** Ask the host what this step would say, then show it before sending it. */
+      const openDispatch = useCallback(async (stageId) => {
+        if (activePath === null) return
+        setDispatchError(null)
+        setDispatchNotice(null)
+        setDispatchBusy(true)
+        try {
+          const built = await getJson(`${ROUTE_BASE}/prompt?path=${encodeURIComponent(activePath)}&stage=${encodeURIComponent(stageId)}`)
+          setDispatchRequest(built)
+          setDispatchDraft(built.text)
+          setDispatchChoice('new')
+          // The session list is a convenience: without it the dialog still offers
+          // a new session, which is the path that always works.
+          if (typeof props?.listSessions === 'function') {
+            try {
+              const listed = await props.listSessions()
+              setDispatchSessions((Array.isArray(listed) ? listed : []).filter((row) => row.cwd === activePath))
+            } catch (listError) {
+              setDispatchSessions([])
+            }
+          } else {
+            setDispatchSessions([])
+          }
+        } catch (nextError) {
+          // A prompt that could not be generated is a page-level failure: there is
+          // nothing to confirm, so the dialog must not open half-built.
+          setError(nextError?.message ?? String(nextError))
+        } finally {
+          setDispatchBusy(false)
+        }
+      }, [activePath, props])
+
+      const closeDispatch = useCallback(() => {
+        setDispatchRequest(null)
+        setDispatchError(null)
+        setDispatchNotice(null)
+      }, [])
+
+      const sendDispatch = useCallback(async (text, choice) => {
+        if (dispatchRequest === null || typeof props?.sendPrompt !== 'function') return
+        setDispatchBusy(true)
+        setDispatchError(null)
+        setDispatchNotice(null)
+        try {
+          await performDispatch(props, {
+            text,
+            choice,
+            project: dispatchRequest.targets?.project ?? {},
+          })
+          setDispatchRequest(null)
+          reload()
+        } catch (nextError) {
+          // Keep the dialog open: a failed send must never look like a success.
+          setDispatchError(nextError?.message ?? String(nextError))
+        } finally {
+          setDispatchBusy(false)
+        }
+      }, [dispatchRequest, props, reload])
+
+      const copyDispatch = useCallback(async (text) => {
+        if (typeof props?.copyText !== 'function') return
+        try {
+          await props.copyText(text)
+          setDispatchNotice(t('dispatchCopied'))
+        } catch (nextError) {
+          setDispatchError(nextError?.message ?? String(nextError))
+        }
+      }, [props, t])
+
       const onBind = useCallback(async () => {
         if (typeof props?.pickDirectory !== 'function') return
         setBusy(true)
@@ -1405,20 +1741,37 @@ window.__ModuleLoader__.load({
           )
         : overview === null
           ? h('p', { style: S.muted }, t('loading'))
-          : preview !== null
-            ? h(ArtifactPreview, { preview, t, onLoadMore: loadMore, onClose: closeArtifact })
-            : h(
-                'div',
-                null,
-                h(StagePanel, {
-                  t,
-                  project: activeProject,
-                  stage: stageInfo,
-                  onOverride: overrideStage,
-                  onClearOverride: clearStageOverride,
-                }),
-                h(TicketBoard, { board, t }),
-              )
+          : dispatchRequest !== null
+            ? h(DispatchDialog, {
+                prompt: dispatchRequest,
+                draft: dispatchDraft,
+                choice: dispatchChoice,
+                sessions: dispatchSessions,
+                busy: dispatchBusy,
+                error: dispatchError,
+                notice: dispatchNotice,
+                t,
+                onDraft: setDispatchDraft,
+                onChoice: setDispatchChoice,
+                onSend: sendDispatch,
+                onCopy: copyDispatch,
+                onClose: closeDispatch,
+              })
+            : preview !== null
+              ? h(ArtifactPreview, { preview, t, onLoadMore: loadMore, onClose: closeArtifact })
+              : h(
+                  'div',
+                  null,
+                  h(StagePanel, {
+                    t,
+                    project: activeProject,
+                    stage: stageInfo,
+                    onOverride: overrideStage,
+                    onClearOverride: clearStageOverride,
+                    onDispatch: openDispatch,
+                  }),
+                  h(TicketBoard, { board, t }),
+                )
 
       return h(
         'div',
@@ -1497,6 +1850,43 @@ window.__ModuleLoader__.load({
               setProjectTracker: (projectPath, kind) => postJson(`${ROUTE_BASE}/projects/tracker`, { path: projectPath, kind }),
               unbindProject: (projectPath) => postJson(`${ROUTE_BASE}/projects/unbind`, { path: projectPath }),
               setStageOverride: (projectPath, stageId) => postJson(`${ROUTE_BASE}/projects/stage`, { path: projectPath, stage: stageId }),
+              // Dispatch is the one place the workbench writes into a session, so
+              // every step is explicit and every failure is surfaced.
+              createSession: async (project) => {
+                const request = project?.workspaceId ? { workspaceId: project.workspaceId } : { cwd: project?.path }
+                const result = await ctx.remote.session.create(request)
+                if (result?.ok !== true) throw new Error(describeRemoteFailure(result, 'could not create a session'))
+                return result.value.sessionId
+              },
+              sendPrompt: async (sessionId, text) => {
+                const result = await ctx.remote.session.prompt({
+                  requestId: `dw-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                  sessionId,
+                  mode: 'queue',
+                  content: [{ type: 'text', text }],
+                })
+                if (result?.ok !== true) throw new Error(describeRemoteFailure(result, 'the session refused the prompt'))
+                return result.value
+              },
+              openSession: (sessionId) => {
+                workspaceNavigation?.openSession(sessionId)
+              },
+              listSessions: async () => {
+                const result = await ctx.remote.session.list({})
+                if (result?.ok !== true) return []
+                return (result.value?.items ?? []).map((item) => ({
+                  sessionId: item.sessionId,
+                  cwd: item.cwd ?? null,
+                  running: item.running === true,
+                  blank: item.blank === true,
+                }))
+              },
+              copyText: async (text) => {
+                if (typeof navigator === 'undefined' || navigator.clipboard === undefined) {
+                  throw new Error('the clipboard is unavailable in this context')
+                }
+                await navigator.clipboard.writeText(text)
+              },
             }),
           },
           WorkbenchPage,
@@ -1521,6 +1911,10 @@ window.__ModuleLoader__.load({
       BoardNotice,
       TicketBoard,
       TicketCard,
+      DispatchDialog,
+      performDispatch,
+      shortSessionId,
+      describeRemoteFailure,
       StagePanel,
       StagePipeline,
       StageStep,

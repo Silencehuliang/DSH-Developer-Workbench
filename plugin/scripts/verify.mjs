@@ -38,6 +38,7 @@ import {
   readGitHubTickets,
 } from '../lib/tickets.js'
 import { STAGES, deriveStage } from '../lib/stage.js'
+import { DEFAULT_TRIAGE_LABELS, buildDispatchPrompt, readTriageLabels } from '../lib/prompts.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const PLUGIN_DIR = path.resolve(HERE, '..')
@@ -411,6 +412,170 @@ check('project row: the badge shows the derived stage', rowWithStage.includes('�
 const rowPinned = renderText(seam.ProjectRow({ project: { ...fixtureProjects[0], stage: { id: 'pr', overridden: true } }, t: zhT })).join(' | ')
 check('project row: a pinned stage still renders its label', rowPinned.includes('提 PR'))
 
+// Dispatch confirmation: what would be sent, to where, and how.
+/**
+ * Collect every host element of one type from a stub element tree.
+ *
+ * `renderText` only reports strings; a textarea's value and a button's disabled
+ * flag are props, so they need their own walk.
+ *
+ * @param node - an element returned by the stub `createElement`.
+ * @param type - the host element name to collect.
+ * @returns every matching element.
+ */
+function findNodes(node, type) {
+  const found = []
+  const walk = (current) => {
+    if (current === null || current === undefined || typeof current === 'boolean') return
+    if (typeof current === 'string' || typeof current === 'number') return
+    if (Array.isArray(current)) {
+      for (const child of current) walk(child)
+      return
+    }
+    if (typeof current.type === 'function') {
+      const props = { ...(current.props ?? {}) }
+      if (props.children === undefined && current.children !== undefined) props.children = current.children
+      walk(current.type(props))
+      return
+    }
+    if (current.type === type) found.push(current)
+    walk(current.props?.children !== undefined ? current.props.children : current.children)
+  }
+  walk(node)
+  return found
+}
+
+const dispatchPromptFixture = {
+  stage: 'implement',
+  skill: 'implement',
+  skillPath: '/plugins/skills/implement/SKILL.md',
+  subject: 'implement · implement',
+  text: 'PROMPT BODY',
+  targets: {
+    project: { path: '/tmp/demo', title: 'Developer Workbench', workspaceId: 'ws-1' },
+    ticket: { id: '7', title: 'Dispatch', url: 'https://example/7' },
+    board: { state: 'ready', frontier: ['7'] },
+  },
+}
+const dispatchProps = {
+  prompt: dispatchPromptFixture,
+  draft: 'edited draft',
+  choice: 'new',
+  sessions: [{ sessionId: 'session-aaaa-bbbb-cccc-eeeeeeeeeeee', cwd: '/tmp/demo', running: false }],
+  busy: false,
+  error: null,
+  notice: null,
+  t: zhT,
+  onDraft: () => {},
+  onChoice: () => {},
+  onSend: () => {},
+  onCopy: () => {},
+  onClose: () => {},
+}
+const dialog = seam.DispatchDialog(dispatchProps)
+const dialogText = renderText(dialog).join(' | ')
+check('dispatch: the dialog names its stage and skill', dialogText.includes('派发确认') && dialogText.includes('implement'))
+check('dispatch: the dialog shows the target project and its path', dialogText.includes('Developer Workbench') && dialogText.includes('/tmp/demo'))
+check('dispatch: the dialog shows the target ticket', dialogText.includes('#7') && dialogText.includes('Dispatch'))
+check('dispatch: the prompt is editable and holds the current draft', findNodes(dialog, 'textarea')[0]?.props?.value === 'edited draft')
+check('dispatch: a new session is offered', dialogText.includes('新建会话'))
+check('dispatch: the project\u2019s existing sessions are offered', dialogText.includes('eeeeeeee'), dialogText)
+check('dispatch: the three actions are present', dialogText.includes('新建会话并发送') && dialogText.includes('复制提示词') && dialogText.includes('取消'))
+check('dispatch: nothing renders without a prompt', seam.DispatchDialog({ prompt: null, t: zhT }) === null)
+check('dispatch: sending is labelled while in flight', renderText(seam.DispatchDialog({ ...dispatchProps, busy: true })).join(' ').includes('发送中'))
+check('dispatch: a running session is marked as such', renderText(seam.DispatchDialog({ ...dispatchProps, sessions: [{ sessionId: 'session-1-2-3-4-running', cwd: '/tmp/demo', running: true }] })).join(' ').includes('running'))
+check('dispatch: no sessions explains why only a new one is offered', renderText(seam.DispatchDialog({ ...dispatchProps, sessions: [] })).join(' ').includes('还没有会话'))
+check('dispatch: reusing a session changes the primary action', renderText(seam.DispatchDialog({ ...dispatchProps, choice: 'session-aaaa-bbbb-cccc-eeeeeeeeeeee' })).join(' ').includes('在已有会话发送'))
+const failedDialog = renderText(seam.DispatchDialog({ ...dispatchProps, error: 'boom' })).join(' | ')
+check('dispatch: a failed send keeps the dialog and shows the reason', failedDialog.includes('派发失败') && failedDialog.includes('boom'))
+check('dispatch: a copied prompt is acknowledged', renderText(seam.DispatchDialog({ ...dispatchProps, notice: '已复制到剪贴板' })).join(' ').includes('已复制'))
+check('dispatch: a session id is shortened, never invented', seam.shortSessionId('session-aa-bb-cc-1234567890abcdef') === '12345678', seam.shortSessionId('session-aa-bb-cc-1234567890abcdef'))
+check('remote failures: a message is used verbatim', seam.describeRemoteFailure({ ok: false, error: { message: 'nope' } }, 'fallback') === 'nope')
+check('remote failures: a code alone still reads as a failure', seam.describeRemoteFailure({ ok: false, error: { code: 'E_DENIED' } }, 'fallback').includes('E_DENIED'))
+check('remote failures: an empty failure is still not silence', seam.describeRemoteFailure({ ok: false }, 'fallback') === 'fallback')
+
+const pipelineWithDispatch = renderText(seam.StagePipeline({ stage: stageFixture, t: zhT, onOverride: () => {}, onDispatch: () => {} })).join(' | ')
+check('pipeline: the dispatch button names the skill it will run', pipelineWithDispatch.includes('派发 · implement'), pipelineWithDispatch.slice(0, 200))
+check('pipeline: no dispatch button when the container offers none', renderText(seam.StagePipeline({ stage: stageFixture, t: zhT, onOverride: () => {} })).join(' | ').includes('派发') === false)
+
+// The dispatch sequence itself, with the side effects stubbed. This is the part
+// that would stay invisible until it broke in front of a user.
+const dispatchCalls = []
+const sentSession = await seam.performDispatch(
+  {
+    createSession: async (project) => {
+      dispatchCalls.push(`create:${project.workspaceId ?? project.path}`)
+      return 'session-new'
+    },
+    sendPrompt: async (sessionId, text) => {
+      dispatchCalls.push(`send:${sessionId}:${text}`)
+    },
+    openSession: (sessionId) => {
+      dispatchCalls.push(`open:${sessionId}`)
+    },
+  },
+  { text: 'hello', choice: 'new', project: { workspaceId: 'ws-1', path: '/tmp/demo' } },
+)
+check('dispatch run: a new session is created, sent to, then opened, in that order', sentSession === 'session-new' && dispatchCalls.join(' | ') === 'create:ws-1 | send:session-new:hello | open:session-new', dispatchCalls.join(' | '))
+
+const reuseCalls = []
+await seam.performDispatch(
+  {
+    createSession: async () => {
+      reuseCalls.push('create')
+      return 'wrong'
+    },
+    sendPrompt: async (sessionId, text) => {
+      reuseCalls.push(`send:${sessionId}:${text}`)
+    },
+    openSession: (sessionId) => {
+      reuseCalls.push(`open:${sessionId}`)
+    },
+  },
+  { text: 'again', choice: 'session-existing', project: {} },
+)
+check('dispatch run: reusing a session never creates one', reuseCalls.join(' | ') === 'send:session-existing:again | open:session-existing', reuseCalls.join(' | '))
+
+let createFailure = null
+try {
+  await seam.performDispatch(
+    { createSession: async () => { throw new Error('no workspace') }, sendPrompt: async () => {}, openSession: () => {} },
+    { text: 'x', choice: 'new', project: {} },
+  )
+} catch (error) {
+  createFailure = error.message
+}
+check('dispatch run: a failed creation surfaces its reason', createFailure === 'no workspace', String(createFailure))
+
+const afterSendFailure = []
+let sendFailure = null
+try {
+  await seam.performDispatch(
+    {
+      createSession: async () => 'session-x',
+      sendPrompt: async () => {
+        afterSendFailure.push('send')
+        throw new Error('refused')
+      },
+      openSession: () => {
+        afterSendFailure.push('open')
+      },
+    },
+    { text: 'x', choice: 'new', project: {} },
+  )
+} catch (error) {
+  sendFailure = error.message
+}
+check('dispatch run: a refused prompt is never followed by navigation', sendFailure === 'refused' && afterSendFailure.join(',') === 'send', afterSendFailure.join(','))
+
+let emptyChoice = null
+try {
+  await seam.performDispatch({ sendPrompt: async () => {} }, { text: 'x', choice: '', project: {} })
+} catch (error) {
+  emptyChoice = error.message
+}
+check('dispatch run: an empty session choice is refused', emptyChoice === 'no target session was chosen', String(emptyChoice))
+
 // Both dictionaries must define the same keys, or one language renders raw keys.
 const zhKeys = Object.keys(seam.dicts.zh).sort()
 const enKeys = Object.keys(seam.dicts.en).sort()
@@ -576,6 +741,78 @@ check('stage: the threshold is reported so the rule is inspectable', wayfinder.f
 const mapWithoutTickets = deriveStage({ ...trackerFacts, planCount: 1 })
 check('stage: a planning map with no tickets points at cutting tickets', mapWithoutTickets.bypass.some((entry) => entry.skill === 'to-tickets'), JSON.stringify(mapWithoutTickets.bypass))
 check('stage: a map counts as spec-shaped progress, not as grill', deriveStage({ ...trackerFacts, planCount: 1 }).stage === 'tickets', deriveStage({ ...trackerFacts, planCount: 1 }).stage)
+
+// ── 1e. dispatch prompts: what a session would actually receive ──────────────
+
+console.log('\ndispatch prompts (hermetic)')
+
+const BUNDLED_SKILLS = path.join(PLUGIN_DIR, 'skills')
+const stageEntry = new Map(STAGES.map((entry) => [entry.id, entry]))
+const asPosix = (target) => target.split(path.sep).join('/')
+
+const ticketsPrompt = buildDispatchPrompt({
+  stage: stageEntry.get('tickets'),
+  skillsDir: BUNDLED_SKILLS,
+  tracker: { kind: 'github', label: 'GitHub Issues', source: 'project-declaration' },
+  repository: { owner: 'o', repo: 'r' },
+  project: { title: 'Demo', path: '/tmp/demo' },
+  triageLabels: DEFAULT_TRIAGE_LABELS,
+})
+check('prompt: the skill absolute path is always present', ticketsPrompt.text.includes(asPosix(ticketsPrompt.skillPath)), ticketsPrompt.skillPath)
+check('prompt: the skill path points at a file that exists', fs.existsSync(ticketsPrompt.skillPath), ticketsPrompt.skillPath)
+check('prompt: the skill name is quoted so the tool shortcut can be offered', ticketsPrompt.text.includes('"to-tickets"'))
+// 16 of 27 skills set this, and every workflow-gating skill is among them, so the
+// fallback sentence is what makes the prompt work at all.
+check('prompt: the disable-model-invocation fallback is explained', ticketsPrompt.text.includes('disable-model-invocation'))
+check('prompt: the tracker is named with its repository', ticketsPrompt.text.includes('GitHub Issues') && ticketsPrompt.text.includes('o/r'))
+check('prompt: the triage vocabulary is listed', DEFAULT_TRIAGE_LABELS.every((label) => ticketsPrompt.text.includes(label)))
+check('prompt: the project title and working directory are given', ticketsPrompt.text.includes('Demo') && ticketsPrompt.text.includes('/tmp/demo'))
+check('prompt: the report back is specified', ticketsPrompt.text.includes('完成时请回报'))
+
+// The acceptance criterion is per-stage, so check every stage, not a sample.
+const everyStageHasItsSkill = STAGES.every((entry) => {
+  const built = buildDispatchPrompt({
+    stage: entry,
+    skillsDir: BUNDLED_SKILLS,
+    tracker: { kind: 'local-markdown' },
+    project: { title: 'D', path: '/tmp/d' },
+  })
+  return built.text.includes(asPosix(built.skillPath)) && fs.existsSync(built.skillPath)
+})
+check('prompt: every stage names a skill file that exists on disk', everyStageHasItsSkill)
+
+const implementPrompt = buildDispatchPrompt({
+  stage: stageEntry.get('implement'),
+  skillsDir: BUNDLED_SKILLS,
+  tracker: { kind: 'github' },
+  project: { title: 'D', path: '/tmp/d' },
+  ticket: { id: '7', title: 'Dispatch', url: 'https://example/7', openBlockers: [] },
+})
+check('prompt: the implement step names the target ticket', implementPrompt.text.includes('#7') && implementPrompt.text.includes('Dispatch'))
+check('prompt: the implement step links the ticket', implementPrompt.text.includes('https://example/7'))
+const noTicket = buildDispatchPrompt({ stage: stageEntry.get('implement'), skillsDir: BUNDLED_SKILLS, tracker: null, project: { title: 'D', path: '/tmp/d' }, ticket: null })
+check('prompt: an implement dispatch with no ticket says so instead of pretending', noTicket.text.includes('没有指定工单编号'))
+const blockedImplementPrompt = buildDispatchPrompt({ stage: stageEntry.get('implement'), skillsDir: BUNDLED_SKILLS, tracker: null, project: { title: 'D', path: '/tmp/d' }, ticket: { id: '9', title: 'X', openBlockers: ['7'] } })
+check('prompt: a still-blocked ticket is flagged inside the prompt', blockedImplementPrompt.text.includes('#7') && blockedImplementPrompt.text.includes('未解除的阻塞'))
+
+const localPrompt = buildDispatchPrompt({ stage: stageEntry.get('tickets'), skillsDir: BUNDLED_SKILLS, tracker: { kind: 'local-markdown' }, project: { title: 'D', path: '/tmp/d' } })
+check('prompt: a local-markdown tracker carries its file conventions', localPrompt.text.includes('.scratch/<feature-slug>/issues/'))
+const customPrompt = buildDispatchPrompt({ stage: stageEntry.get('tickets'), skillsDir: BUNDLED_SKILLS, tracker: { kind: 'custom' }, project: { title: 'D', path: '/tmp/d' } })
+check('prompt: a custom tracker defers to the project declaration', customPrompt.text.includes('docs/agents/issue-tracker.md'))
+const noTrackerPrompt = buildDispatchPrompt({ stage: stageEntry.get('tickets'), skillsDir: BUNDLED_SKILLS, tracker: null, project: { title: 'D', path: '/tmp/d' } })
+check('prompt: an unresolved tracker is stated, not invented', noTrackerPrompt.text.includes('尚未确定'))
+
+const labelFixture = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-wb-labels-'))
+check('labels: a project with no declaration gets the canonical five', readTriageLabels(labelFixture).join(',') === DEFAULT_TRIAGE_LABELS.join(','))
+fs.mkdirSync(path.join(labelFixture, 'docs', 'agents'), { recursive: true })
+fs.writeFileSync(
+  path.join(labelFixture, 'docs', 'agents', 'triage-labels.md'),
+  ['# Triage Labels', '', '| Label in mattpocock/skills | Label in our tracker | Meaning |', '| --- | --- | --- |', '| `needs-triage` | `bug:triage` | evaluate |', '| `ready-for-agent` | `agent-ready` | go |'].join('\n'),
+  'utf8',
+)
+const declaredLabels = readTriageLabels(labelFixture)
+check('labels: the tracker column is read, not the canonical column', declaredLabels.join(',') === 'bug:triage,agent-ready', declaredLabels.join(','))
+fs.rmSync(labelFixture, { recursive: true, force: true })
 
 // ── 2. host routes ────────────────────────────────────────────────────────────
 
@@ -902,6 +1139,39 @@ if (CLIENT_ONLY) {
     check('stage pin: a null stage clears the pin', cleared.status === 200 && cleared.body?.stageOverride === null, `HTTP ${cleared.status}`)
     const afterClear = await getJson(stageUrl(stageProject))
     check('stage pin: clearing returns to the derived stage', afterClear.stage === 'review' && afterClear.overridden === false, JSON.stringify({ stage: afterClear.stage, overridden: afterClear.overridden }))
+
+    // ── prompt: the text a session would actually be sent ────────────────────
+    const promptUrl = (target, stage, ticket) =>
+      `/api/developer-workbench/prompt?path=${encodeURIComponent(target)}&stage=${stage}${ticket === undefined ? '' : `&ticket=${encodeURIComponent(ticket)}`}`
+
+    const ticketsPromptLive = await getJson(promptUrl(stageProject, 'tickets'))
+    check('prompt route: a valid stage returns a prompt', typeof ticketsPromptLive.text === 'string' && ticketsPromptLive.stage === 'tickets', String(ticketsPromptLive.stage))
+    check('prompt route: the skill path is absolute and really exists', path.isAbsolute(ticketsPromptLive.skillPath) && fs.existsSync(ticketsPromptLive.skillPath), ticketsPromptLive.skillPath)
+    check('prompt route: the text carries that exact path', ticketsPromptLive.text.includes(ticketsPromptLive.skillPath))
+    check('prompt route: the tracker convention is spelled out', ticketsPromptLive.text.includes('.scratch/<feature-slug>/issues/'), ticketsPromptLive.text.slice(0, 260))
+
+    fs.writeFileSync(
+      path.join(stageProject, 'docs', 'agents', 'triage-labels.md'),
+      ['| Label in mattpocock/skills | Label in our tracker | Meaning |', '| --- | --- | --- |', '| `needs-triage` | `bug:triage` | evaluate |'].join('\n'),
+      'utf8',
+    )
+    const labelled = await getJson(promptUrl(stageProject, 'tickets'))
+    check('prompt route: triage labels come from the project declaration', labelled.text.includes('bug:triage'), labelled.text.slice(0, 200))
+
+    const badStage = await fetch(`${BASE}${promptUrl(stageProject, 'nope')}`)
+    check('prompt route: an unknown stage is a 400', badStage.status === 400, `HTTP ${badStage.status}`)
+    const noStage = await fetch(`${BASE}/api/developer-workbench/prompt?path=${encodeURIComponent(stageProject)}`)
+    check('prompt route: a missing stage is a 400', noStage.status === 400, `HTTP ${noStage.status}`)
+
+    // Live: this repository at implement, which must name a real startable ticket.
+    const livePrompt = await getJson(promptUrl(path.resolve(HERE, '..', '..'), 'implement'))
+    if (livePrompt.targets?.board?.state === 'ready') {
+      check('prompt route: the live implement prompt names a startable ticket', livePrompt.targets.ticket !== null && livePrompt.text.includes(`#${livePrompt.targets.ticket.id}`), JSON.stringify(livePrompt.targets.ticket))
+      check('prompt route: the live prompt names this repository', livePrompt.text.includes('DSH-Developer-Workbench'))
+      check('prompt route: the live prompt offers a workspace to create the session in', livePrompt.targets.project.workspaceId !== null || typeof livePrompt.targets.project.path === 'string')
+    } else {
+      console.log(`  skip live prompt: board state ${livePrompt.targets?.board?.state}`)
+    }
 
     // Live: this repository. Guarded on the board being readable so an offline
     // environment skips rather than failing for the wrong reason.
