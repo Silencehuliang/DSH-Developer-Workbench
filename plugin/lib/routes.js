@@ -13,6 +13,7 @@ import path from 'node:path'
 
 import { readArtifactPreview, scanArtifacts } from './artifacts.js'
 import { describeProject, probeDirectory } from './projects.js'
+import { STAGES, deriveStage } from './stage.js'
 import { analyseBoard, createCommandRunner, readGitHubTickets, readLocalTickets, resolveGitHubRepo } from './tickets.js'
 import { readSkillInventory } from './skills.js'
 import { projectKey } from './state.js'
@@ -377,6 +378,70 @@ export function buildRoutes({ ctx, store, info, now = () => new Date(), run = cr
     },
   }
 
+  /**
+   * Read a project's tickets through its own tracker.
+   *
+   * Shared by the board and the stage derivation on purpose: two readers that
+   * could disagree about what the frontier is would be worse than one that is
+   * occasionally wrong, because the disagreement is invisible.
+   */
+  const boardFor = (resolved, tracker) => {
+    if (tracker === null) {
+      return { state: 'needs-tracker', tickets: [], frontier: [], problems: [], notes: [] }
+    }
+    if (tracker.kind === 'local-markdown') {
+      const read = readLocalTickets({ projectPath: resolved })
+      return { state: 'ready', ...analyseBoard(read.tickets), notes: read.notes }
+    }
+    if (tracker.kind === 'github') {
+      const repository = resolveGitHubRepo(resolved, run)
+      if (repository === null) {
+        return {
+          state: 'unavailable',
+          reason: { code: 'no-github-remote', message: 'this project has no GitHub remote to read issues from' },
+          tickets: [],
+          frontier: [],
+          problems: [],
+          notes: [],
+        }
+      }
+      const read = readGitHubTickets({ run, owner: repository.owner, repo: repository.repo })
+      if (read.ok !== true) {
+        return {
+          state: 'unavailable',
+          reason: { code: read.code, message: read.message },
+          repository,
+          tickets: [],
+          frontier: [],
+          problems: [],
+          notes: [],
+        }
+      }
+      return { state: 'ready', repository, ...analyseBoard(read.tickets), notes: read.notes }
+    }
+    // A tracker this build cannot read is its own state. Rendering nothing would
+    // be indistinguishable from an empty, healthy board.
+    return {
+      state: 'unsupported',
+      reason: { code: 'adapter-missing', message: `no adapter for the ${tracker.kind} tracker yet` },
+      tickets: [],
+      frontier: [],
+      problems: [],
+      notes: [],
+    }
+  }
+
+  /** Count scanned artifacts by kind, which is what the stage derivation reads. */
+  const artifactCounts = (scan) => {
+    const counts = { spec: 0, plan: 0, adr: 0, glossary: 0, handoff: 0 }
+    for (const group of scan.groups) {
+      for (const item of group.items) {
+        if (counts[item.kind] !== undefined) counts[item.kind] += 1
+      }
+    }
+    return counts
+  }
+
   const tickets = {
     kind: 'exact',
     path: `${ROUTE_BASE}/tickets`,
@@ -388,64 +453,72 @@ export function buildRoutes({ ctx, store, info, now = () => new Date(), run = cr
           return
         }
         const resolved = path.resolve(target)
-        const mapping = store.get(projectKey(resolved))?.tracker ?? null
-        const tracker = resolveTracker({ projectPath: resolved, mapping })
+        const tracker = resolveTracker({
+          projectPath: resolved,
+          mapping: store.get(projectKey(resolved))?.tracker ?? null,
+        })
+        sendJson(res, 200, { tracker, ...boardFor(resolved, tracker) })
+      } catch (error) {
+        fail(res, 500, error)
+      }
+    },
+  }
 
-        // Nothing decided the tracker: say so and send the user to the bind flow,
-        // rather than rendering an empty board that reads as "no tickets".
-        if (tracker === null) {
-          sendJson(res, 200, { tracker: null, state: 'needs-tracker', tickets: [], frontier: [], problems: [], notes: [] })
+  const stage = {
+    kind: 'exact',
+    path: `${ROUTE_BASE}/stage`,
+    handler: (req, res) => {
+      try {
+        const target = queryParam(req, 'path')
+        if (target === null) {
+          sendJson(res, 400, { error: 'path is required' })
           return
         }
+        const resolved = path.resolve(target)
+        const key = projectKey(resolved)
+        const record = store.get(key) ?? null
+        const tracker = resolveTracker({ projectPath: resolved, mapping: record?.tracker ?? null })
+        const scan = scanArtifacts(resolved, { handoffs: record?.handoffs ?? [] })
+        const counts = artifactCounts(scan)
+        const board = boardFor(resolved, tracker)
 
-        if (tracker.kind === 'local-markdown') {
-          const read = readLocalTickets({ projectPath: resolved })
-          sendJson(res, 200, { tracker, state: 'ready', ...analyseBoard(read.tickets), notes: read.notes })
-          return
-        }
-
-        if (tracker.kind === 'github') {
-          const repository = resolveGitHubRepo(resolved, run)
-          if (repository === null) {
-            sendJson(res, 200, {
-              tracker,
-              state: 'unavailable',
-              reason: { code: 'no-github-remote', message: 'this project has no GitHub remote to read issues from' },
-              tickets: [],
-              frontier: [],
-              problems: [],
-              notes: [],
-            })
-            return
-          }
-          const read = readGitHubTickets({ run, owner: repository.owner, repo: repository.repo })
-          if (read.ok !== true) {
-            sendJson(res, 200, {
-              tracker,
-              state: 'unavailable',
-              reason: { code: read.code, message: read.message },
-              repository,
-              tickets: [],
-              frontier: [],
-              problems: [],
-              notes: [],
-            })
-            return
-          }
-          sendJson(res, 200, { tracker, state: 'ready', repository, ...analyseBoard(read.tickets), notes: read.notes })
-          return
-        }
-
-        // A tracker this build cannot read is its own state. Rendering nothing
-        // would be indistinguishable from an empty, healthy board.
-        sendJson(res, 200, {
+        const derivation = deriveStage({
           tracker,
-          state: 'unsupported',
-          reason: { code: 'adapter-missing', message: `no adapter for the ${tracker.kind} tracker yet` },
-          tickets: [],
-          frontier: [],
-          problems: [],
-          notes: [],
+          specCount: counts.spec,
+          planCount: counts.plan,
+          adrCount: counts.adr,
+          glossaryCount: counts.glossary,
+          ticketTotal: (board.tickets ?? []).length,
+          ticketDone: (board.tickets ?? []).filter((ticket) => ticket.statusKind === 'done').length,
+          frontierCount: board.frontier?.length ?? 0,
+          reviewCount: Array.isArray(record?.reviews) ? record.reviews.length : 0,
+          prCount: Array.isArray(record?.pullRequests) ? record.pullRequests.length : 0,
+          override: record?.stageOverride ?? null,
+        })
+
+        // Persist only on change: a poll must not rewrite the state file, and the
+        // stored value is what the cheap `/overview` badge reads.
+        const previous = record?.stage ?? null
+        if (previous === null || previous.id !== derivation.stage || previous.overridden !== derivation.overridden) {
+          store.upsert(key, {
+            path: resolved,
+            stage: { id: derivation.stage, derivedAt: now().toISOString(), overridden: derivation.overridden },
+          })
+        }
+
+        sendJson(res, 200, {
+          ...derivation,
+          stages: STAGES,
+          tracker,
+          board: {
+            state: board.state,
+            reason: board.reason ?? null,
+            repository: board.repository ?? null,
+            frontier: board.frontier ?? [],
+            problems: board.problems ?? [],
+            notes: board.notes ?? [],
+          },
+          artifacts: { counts, groups: scan.groups },
         })
       } catch (error) {
         fail(res, 500, error)
@@ -453,5 +526,32 @@ export function buildRoutes({ ctx, store, info, now = () => new Date(), run = cr
     },
   }
 
-  return [health, skills, overview, probe, artifacts, artifact, tickets, bind, setTracker, unbind]
+  const setStage = {
+    kind: 'exact',
+    path: `${ROUTE_BASE}/projects/stage`,
+    handler: async (req, res) => {
+      try {
+        const body = await readJsonBody(req)
+        const raw = typeof body.path === 'string' ? body.path.trim() : ''
+        if (raw.length === 0) {
+          sendJson(res, 400, { error: 'path is required' })
+          return
+        }
+        const resolved = path.resolve(raw)
+        const stageId = body.stage === null || body.stage === undefined ? null : String(body.stage)
+        if (stageId !== null && !STAGES.some((entry) => entry.id === stageId)) {
+          sendJson(res, 400, { error: `unknown stage: ${stageId}`, accepted: STAGES.map((entry) => entry.id) })
+          return
+        }
+        // A pin is a patch over the derivation, not a replacement for it: the
+        // derivation keeps running and keeps being reported next to the pin.
+        store.upsert(projectKey(resolved), { path: resolved, stageOverride: stageId })
+        sendJson(res, 200, { ok: true, stageOverride: stageId })
+      } catch (error) {
+        fail(res, 500, error)
+      }
+    },
+  }
+
+  return [health, skills, overview, probe, artifacts, artifact, tickets, stage, bind, setTracker, setStage, unbind]
 }

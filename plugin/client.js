@@ -69,6 +69,25 @@ window.__ModuleLoader__.load({
       choose: '就用这个',
       stageUnknown: '阶段待接入',
       stageBody: '项目列表已经接上真实数据。下一步是工单看板与阶段推导。',
+      stagePipeline: '阶段流水线',
+      stageNow: '当前',
+      stageDone: '已完成',
+      stagePending: '未开始',
+      stageSkill: '技能 {skill}',
+      stageEvidenceNote: '依据',
+      stageOverridden: '已被手动覆盖',
+      stageDerivedWas: '推导结果是 {derived}',
+      stageOverride: '手动覆盖',
+      stageClearOverride: '恢复自动推导',
+      stageBypass: '旁路建议',
+      stageSetup: '配置 tracker',
+      stageGrill: '拷问',
+      stageSpec: '成稿',
+      stageTickets: '拆工单',
+      stageImplement: '实现',
+      stageReview: '评审',
+      stagePr: '提 PR',
+      stageRetro: '复盘',
       board: '工单看板',
       boardNeedsTracker: '这个项目的 tracker 还没定。先绑定项目并选择 tracker，看板才有东西可读。',
       boardUnsupported: '还没有 {kind} tracker 的适配器，所以这里不显示任何工单。',
@@ -138,8 +157,27 @@ window.__ModuleLoader__.load({
       trackerConflict: 'The project and the workbench disagree',
       trackerConflictHint: 'The project declares {declared}; the workbench recorded {mapped}. You decide which wins — I will not guess.',
       choose: 'Use this',
-      stageUnknown: 'Stage arrives next',
+      stageUnknown: 'Stage pending',
       stageBody: 'The project list is wired to real data. Next are the ticket board and stage derivation.',
+      stagePipeline: 'Stage pipeline',
+      stageNow: 'now',
+      stageDone: 'done',
+      stagePending: 'not started',
+      stageSkill: 'skill {skill}',
+      stageEvidenceNote: 'because',
+      stageOverridden: 'manually overridden',
+      stageDerivedWas: 'the derivation says {derived}',
+      stageOverride: 'Override',
+      stageClearOverride: 'Back to automatic',
+      stageBypass: 'Suggested detour',
+      stageSetup: 'Configure tracker',
+      stageGrill: 'Grill',
+      stageSpec: 'Spec',
+      stageTickets: 'Tickets',
+      stageImplement: 'Implement',
+      stageReview: 'Review',
+      stagePr: 'Pull request',
+      stageRetro: 'Retro',
       board: 'Ticket board',
       boardNeedsTracker: 'This project has no tracker yet. Bind it and pick a tracker before the board can read anything.',
       boardUnsupported: 'There is no adapter for a {kind} tracker yet, so no tickets are shown.',
@@ -438,6 +476,29 @@ window.__ModuleLoader__.load({
       return null
     }
 
+    /** Dictionary keys for the pipeline steps, in presentation order. */
+    const STAGE_LABEL_KEYS = {
+      setup: 'stageSetup',
+      grill: 'stageGrill',
+      spec: 'stageSpec',
+      tickets: 'stageTickets',
+      implement: 'stageImplement',
+      review: 'stageReview',
+      pr: 'stagePr',
+      retro: 'stageRetro',
+    }
+
+    /**
+     * Localized label for a stage id.
+     * @param id - the stage id from the host.
+     * @param t - translate function.
+     * @returns the label, or the raw id when it is unknown.
+     */
+    function stageLabel(id, t) {
+      const key = STAGE_LABEL_KEYS[id]
+      return key === undefined ? String(id) : t(key)
+    }
+
     /**
      * Localized reason for a refused preview, so the UI never shows mojibake or
      * a document that merely looks complete.
@@ -507,17 +568,23 @@ window.__ModuleLoader__.load({
 
       const head = [h('span', { key: 'title', style: S.rowTitle }, project.title)]
       head.push(h(TrackerChip, { key: 'tracker', tracker: project.tracker, t }))
-      // The real stage derivation lands in its own ticket; until then the badge
-      // says so rather than showing a stage nobody computed.
+      // The badge is the last derived stage, persisted by `/stage`. A pinned stage
+      // is marked in its tooltip, so a decision is never mistaken for a reading.
+      const stageInfo = project.stage ?? null
       head.push(
         h(
           'span',
           {
             key: 'stage',
             className: 'dw-stage-badge',
-            style: { ...S.chip, color: 'var(--dsw-alias-label-secondary)' },
+            style: {
+              ...S.chip,
+              color: stageInfo === null ? 'var(--dsw-alias-label-secondary)' : 'var(--dsw-alias-brand-primary)',
+              borderColor: stageInfo === null ? 'var(--dsw-alias-border-l2)' : 'var(--dsw-alias-brand-primary)',
+            },
+            title: stageInfo?.overridden === true ? t('stageOverridden') : undefined,
           },
-          project.stage ?? t('stageUnknown'),
+          stageInfo === null ? t('stageUnknown') : stageLabel(stageInfo.id, t),
         ),
       )
 
@@ -728,20 +795,159 @@ window.__ModuleLoader__.load({
       )
     }
 
-    /** The middle column's placeholder until the stage derivation lands. */
+    /** One step of the pipeline. */
+    function StageStep(props) {
+      const { entry, state, t } = props
+      const color = state === 'done'
+        ? 'var(--dsw-alias-state-success-primary)'
+        : state === 'now'
+          ? 'var(--dsw-alias-brand-primary)'
+          : 'var(--dsw-alias-label-secondary)'
+      return h(
+        'span',
+        {
+          className: `dw-step dw-step-${state}`,
+          style: {
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 5,
+            fontSize: 11.4,
+            color,
+            padding: '3px 7px',
+            borderRadius: 7,
+            border: state === 'now' ? `1px solid ${color}` : '1px solid transparent',
+            fontWeight: state === 'now' ? 600 : 400,
+            whiteSpace: 'nowrap',
+          },
+          title: t('stageSkill', { skill: entry.skill }),
+        },
+        h('span', { style: { fontSize: 10 } }, state === 'done' ? '✓' : state === 'now' ? '●' : '○'),
+        stageLabel(entry.id, t),
+      )
+    }
+
+    /**
+     * The pipeline itself: what is done, what is current, what is next, and why —
+     * plus the pin, which always shows the derivation it is overriding.
+     */
+    function StagePipeline(props) {
+      const { stage, t, onOverride, onClearOverride } = props
+      if (stage === null || stage === undefined) return h('p', { style: S.muted }, t('loading'))
+
+      const steps = Array.isArray(stage.stages) ? stage.stages : []
+      const completed = Array.isArray(stage.completed) ? stage.completed : []
+      const evidence = Array.isArray(stage.evidence) ? stage.evidence : []
+      const bypass = Array.isArray(stage.bypass) ? stage.bypass : []
+      const current = stage.stage
+
+      const head = [h('div', { key: 'label', style: { ...S.sectionTitle, marginBottom: 0 } }, t('stagePipeline'))]
+      if (stage.overridden === true) {
+        head.push(
+          h(
+            'span',
+            {
+              key: 'pin',
+              style: {
+                ...S.chip,
+                marginLeft: 8,
+                color: 'var(--dsw-alias-state-warn-primary)',
+                borderColor: 'var(--dsw-alias-state-warn-primary)',
+              },
+            },
+            t('stageOverridden'),
+          ),
+        )
+        head.push(
+          h('span', { key: 'derived', style: { ...S.muted, marginLeft: 8, fontSize: 11 } }, t('stageDerivedWas', { derived: stageLabel(stage.derived, t) })),
+        )
+      }
+
+      const rows = [
+        h('div', { key: 'head', style: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', marginBottom: 9 } }, head),
+        h(
+          'div',
+          { key: 'steps', className: 'dw-steps', style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 2 } },
+          ...steps.map((entry, index) => {
+            const state = entry.id === current ? 'now' : completed.includes(entry.id) ? 'done' : 'pending'
+            const node = h(StageStep, { key: entry.id, entry, state, t })
+            if (index === steps.length - 1) return node
+            return [node, h('span', { key: `${entry.id}-sep`, style: { color: 'var(--dsw-alias-label-secondary)', fontSize: 10 } }, '›')]
+          }),
+        ),
+      ]
+
+      const currentEntry = steps.find((entry) => entry.id === current)
+      if (currentEntry !== undefined) {
+        const skill = currentEntry.alternative === undefined
+          ? currentEntry.skill
+          : `${currentEntry.skill} / ${currentEntry.alternative}`
+        rows.push(h('div', { key: 'skill', style: { ...S.muted, marginTop: 8, fontSize: 11.6 } }, t('stageSkill', { skill })))
+      }
+
+      for (const item of evidence) {
+        rows.push(
+          h('p', { key: `ev-${item.code}`, style: { ...S.muted, margin: '6px 0 0', fontSize: 11.6 } }, `${t('stageEvidenceNote')}：${item.note}`),
+        )
+      }
+
+      for (const item of bypass) {
+        rows.push(
+          h(
+            'div',
+            { key: `by-${item.code}`, style: { ...S.banner, marginTop: 10, marginBottom: 0, borderLeftColor: 'var(--dsw-alias-state-warn-primary)' } },
+            h('div', { style: S.bannerTitle }, `${t('stageBypass')} · ${item.skill}`),
+            h('p', { style: S.bannerBody }, item.note),
+          ),
+        )
+      }
+
+      if (typeof onOverride === 'function') {
+        const controls = steps.map((entry) =>
+          h(
+            'button',
+            {
+              key: entry.id,
+              type: 'button',
+              className: `dw-pin-${entry.id}`,
+              style: { ...S.button, padding: '3px 8px', fontSize: 11 },
+              onClick: () => onOverride(entry.id),
+            },
+            stageLabel(entry.id, t),
+          ),
+        )
+        if (stage.overridden === true && typeof onClearOverride === 'function') {
+          controls.push(
+            h(
+              'button',
+              { key: 'clear', type: 'button', className: 'dw-pin-clear', style: { ...S.button, padding: '3px 8px', fontSize: 11 }, onClick: () => onClearOverride() },
+              t('stageClearOverride'),
+            ),
+          )
+        }
+        rows.push(
+          h(
+            'div',
+            { key: 'override', style: { marginTop: 12 } },
+            h('div', { style: { ...S.muted, fontSize: 10.5, marginBottom: 5 } }, t('stageOverride')),
+            h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 5 } }, controls),
+          ),
+        )
+      }
+
+      return h('div', { className: 'dw-pipeline', style: { ...S.card, marginTop: 14 } }, rows)
+    }
+
+    /** The middle column: heading, then the stage pipeline. */
     function StagePanel(props) {
-      const { t, project } = props
+      const { t, project, stage, onOverride, onClearOverride } = props
       return h(
         'div',
         { className: 'dw-stage' },
         h('h1', { style: S.h1 }, t('title')),
         h('p', { style: S.lead }, t('subtitle')),
-        h(
-          'div',
-          { style: S.banner },
-          h('div', { style: S.bannerTitle }, project === null || project === undefined ? t('stageUnknown') : project.title),
-          h('p', { style: S.bannerBody }, t('stageBody')),
-        ),
+        project === null || project === undefined
+          ? h('p', { style: S.muted }, t('stageUnknown'))
+          : h(StagePipeline, { stage, t, onOverride, onClearOverride }),
       )
     }
 
@@ -966,6 +1172,7 @@ window.__ModuleLoader__.load({
       const [artifacts, setArtifacts] = useState(null)
       const [preview, setPreview] = useState(null)
       const [board, setBoard] = useState(null)
+      const [stageInfo, setStageInfo] = useState(null)
 
       useEffect(() => {
         let cancelled = false
@@ -1037,6 +1244,27 @@ window.__ModuleLoader__.load({
         }
       }, [activePath, attempt])
 
+      // `/stage` is the one request that also writes on the host: it caches the
+      // result so the left column's badge stays cheap.
+      useEffect(() => {
+        if (activePath === null) {
+          setStageInfo(null)
+          return undefined
+        }
+        let cancelled = false
+        setStageInfo(null)
+        getJson(`${ROUTE_BASE}/stage?path=${encodeURIComponent(activePath)}`)
+          .then((next) => {
+            if (!cancelled) setStageInfo(next)
+          })
+          .catch(() => {
+            if (!cancelled) setStageInfo(null)
+          })
+        return () => {
+          cancelled = true
+        }
+      }, [activePath, attempt])
+
       const reload = useCallback(() => setAttempt((value) => value + 1), [])
 
       const openArtifact = useCallback(async (item) => {
@@ -1070,6 +1298,34 @@ window.__ModuleLoader__.load({
       }, [preview])
 
       const closeArtifact = useCallback(() => setPreview(null), [])
+
+      /** Pin a stage. The derivation keeps running and is still reported. */
+      const overrideStage = useCallback(async (stageId) => {
+        if (activePath === null || typeof props?.setStageOverride !== 'function') return
+        setBusy(true)
+        try {
+          await props.setStageOverride(activePath, stageId)
+          reload()
+        } catch (nextError) {
+          setError(nextError?.message ?? String(nextError))
+        } finally {
+          setBusy(false)
+        }
+      }, [activePath, props, reload])
+
+      /** Drop the pin and go back to whatever the facts say. */
+      const clearStageOverride = useCallback(async () => {
+        if (activePath === null || typeof props?.setStageOverride !== 'function') return
+        setBusy(true)
+        try {
+          await props.setStageOverride(activePath, null)
+          reload()
+        } catch (nextError) {
+          setError(nextError?.message ?? String(nextError))
+        } finally {
+          setBusy(false)
+        }
+      }, [activePath, props, reload])
 
       const onBind = useCallback(async () => {
         if (typeof props?.pickDirectory !== 'function') return
@@ -1154,7 +1410,13 @@ window.__ModuleLoader__.load({
             : h(
                 'div',
                 null,
-                h(StagePanel, { t, project: activeProject }),
+                h(StagePanel, {
+                  t,
+                  project: activeProject,
+                  stage: stageInfo,
+                  onOverride: overrideStage,
+                  onClearOverride: clearStageOverride,
+                }),
                 h(TicketBoard, { board, t }),
               )
 
@@ -1234,6 +1496,7 @@ window.__ModuleLoader__.load({
               bindProject: (projectPath) => postJson(`${ROUTE_BASE}/projects/bind`, { path: projectPath }),
               setProjectTracker: (projectPath, kind) => postJson(`${ROUTE_BASE}/projects/tracker`, { path: projectPath, kind }),
               unbindProject: (projectPath) => postJson(`${ROUTE_BASE}/projects/unbind`, { path: projectPath }),
+              setStageOverride: (projectPath, stageId) => postJson(`${ROUTE_BASE}/projects/stage`, { path: projectPath, stage: stageId }),
             }),
           },
           WorkbenchPage,
@@ -1258,6 +1521,11 @@ window.__ModuleLoader__.load({
       BoardNotice,
       TicketBoard,
       TicketCard,
+      StagePanel,
+      StagePipeline,
+      StageStep,
+      stageLabel,
+      STAGE_LABEL_KEYS,
       SkillGrid,
       StagePanel,
       describeGit,

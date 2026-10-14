@@ -37,6 +37,7 @@ import {
   parseLocalIssue,
   readGitHubTickets,
 } from '../lib/tickets.js'
+import { STAGES, deriveStage } from '../lib/stage.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const PLUGIN_DIR = path.resolve(HERE, '..')
@@ -361,6 +362,55 @@ check('board: a self-block is called out', boardProblemText.includes('自己阻�
 check('board: an unknown blocker is called out', boardProblemText.includes('不存在的工单') && boardProblemText.includes('99'))
 check('board: unreadable edges are called out as not startable', boardProblemText.includes('读不到') && boardProblemText.includes('7'))
 
+// Stage pipeline rendering, and the localised step vocabulary.
+const stageSteps = [
+  { id: 'setup', skill: 'setup-matt-pocock-skills' },
+  { id: 'grill', skill: 'grilling', alternative: 'grill-with-docs' },
+  { id: 'spec', skill: 'to-spec' },
+  { id: 'tickets', skill: 'to-tickets' },
+  { id: 'implement', skill: 'implement', alternative: 'tdd' },
+  { id: 'review', skill: 'code-review' },
+  { id: 'pr', skill: 'pr' },
+  { id: 'retro', skill: 'retro' },
+]
+const stageFixture = {
+  stage: 'implement',
+  derived: 'implement',
+  overridden: false,
+  completed: ['setup', 'grill', 'spec', 'tickets'],
+  stages: stageSteps,
+  evidence: [{ stage: 'implement', code: 'tickets-open', note: '8 of 11 ticket(s) are still open, 2 startable' }],
+  bypass: [],
+}
+const pipelineText = renderText(seam.StagePipeline({ stage: stageFixture, t: zhT, onOverride: () => {} })).join(' | ')
+check('pipeline: every step is labelled', ['配置 tracker', '拷问', '成稿', '拆工单', '实现', '评审', '提 PR', '复盘'].every((label) => pipelineText.includes(label)), pipelineText.slice(0, 140))
+check('pipeline: the current step offers its skill and its alternative', pipelineText.includes('implement / tdd'), pipelineText)
+check('pipeline: the evidence for the step is shown', pipelineText.includes('依据') && pipelineText.includes('8 of 11'))
+check('pipeline: the pin control lists every stage', pipelineText.includes('手动覆盖') && pipelineText.includes('配置 tracker'))
+check('pipeline: the unpin control is absent while nothing is pinned', pipelineText.includes('恢复自动推导') === false)
+
+const overriddenPipeline = renderText(
+  seam.StagePipeline({ stage: { ...stageFixture, stage: 'pr', derived: 'implement', overridden: true }, t: zhT, onOverride: () => {}, onClearOverride: () => {} }),
+).join(' | ')
+check('pipeline: a pin is labelled as a manual override', overriddenPipeline.includes('已被手动覆盖'))
+check('pipeline: a pin still shows what the derivation said', overriddenPipeline.includes('推导结果是 实现'), overriddenPipeline)
+check('pipeline: the unpin control appears once pinned', overriddenPipeline.includes('恢复自动推导'))
+
+const bypassPipeline = renderText(
+  seam.StagePipeline({ stage: { ...stageFixture, bypass: [{ skill: 'wayfinder', code: 'too-many-open-tickets', note: '30 open tickets is at or above the 12-ticket threshold' }] }, t: zhT, onOverride: () => {} }),
+).join(' | ')
+check('pipeline: a bypass suggestion names its skill and its reason', bypassPipeline.includes('旁路建议') && bypassPipeline.includes('wayfinder') && bypassPipeline.includes('12-ticket threshold'))
+
+check('pipeline: loading shows before the first answer', renderText(seam.StagePipeline({ stage: null, t: zhT })).join(' ').includes('正在读取'))
+check('stage labels: a known id is localised', seam.stageLabel('implement', zhT) === '实现', seam.stageLabel('implement', zhT))
+check('stage labels: an unknown id falls back to itself rather than blank', seam.stageLabel('mystery', zhT) === 'mystery')
+check('stage labels: every step has a key in both dictionaries', Object.values(seam.STAGE_LABEL_KEYS).every((key) => key in seam.dicts.zh && key in seam.dicts.en))
+
+const rowWithStage = renderText(seam.ProjectRow({ project: { ...fixtureProjects[0], stage: { id: 'implement', overridden: false } }, t: zhT })).join(' | ')
+check('project row: the badge shows the derived stage', rowWithStage.includes('实现'), rowWithStage)
+const rowPinned = renderText(seam.ProjectRow({ project: { ...fixtureProjects[0], stage: { id: 'pr', overridden: true } }, t: zhT })).join(' | ')
+check('project row: a pinned stage still renders its label', rowPinned.includes('提 PR'))
+
 // Both dictionaries must define the same keys, or one language renders raw keys.
 const zhKeys = Object.keys(seam.dicts.zh).sort()
 const enKeys = Object.keys(seam.dicts.en).sort()
@@ -482,6 +532,50 @@ const edgesBroken = readGitHubTickets({
 check('github read: an unreadable edge is marked unread, not empty', edgesBroken.tickets[0].edgesRead === false && edgesBroken.tickets[0].blockedBySource === 'unread')
 const edgesBrokenBoard = analyseBoard(edgesBroken.tickets)
 check('analysis: an unreadable edge is never called startable', edgesBrokenBoard.frontier.length === 0 && edgesBrokenBoard.problems.some((problem) => problem.code === 'edges-unread'))
+
+// ── 1d. stage derivation: a pure function over facts ─────────────────────────
+
+console.log('\nstage derivation (hermetic)')
+
+const trackerFacts = { tracker: { kind: 'local-markdown', label: 'Local markdown', source: 'project-declaration' } }
+
+check('stage: a project with no tracker is at setup', deriveStage({}).stage === 'setup')
+check('stage: setup is the only complete thing before it', deriveStage({}).completed.length === 0)
+check('stage: a tracker with nothing else is at grill', deriveStage({ ...trackerFacts }).stage === 'grill', deriveStage({ ...trackerFacts }).stage)
+check('stage: design docs but no spec is spec, not grill', deriveStage({ ...trackerFacts, adrCount: 2 }).stage === 'spec')
+check('stage: a glossary alone also counts as sharpening', deriveStage({ ...trackerFacts, glossaryCount: 1 }).stage === 'spec')
+check('stage: a spec with no tickets is the tickets step', deriveStage({ ...trackerFacts, specCount: 1 }).stage === 'tickets')
+check('stage: partially done tickets is the implement step', deriveStage({ ...trackerFacts, specCount: 1, ticketTotal: 5, ticketDone: 2, frontierCount: 1 }).stage === 'implement')
+check('stage: every ticket done with no review is the review step', deriveStage({ ...trackerFacts, specCount: 1, ticketTotal: 5, ticketDone: 5 }).stage === 'review')
+check('stage: a review with no PR is the pr step', deriveStage({ ...trackerFacts, specCount: 1, ticketTotal: 5, ticketDone: 5, reviewCount: 1 }).stage === 'pr')
+check('stage: a PR is the retro step', deriveStage({ ...trackerFacts, specCount: 1, ticketTotal: 5, ticketDone: 5, reviewCount: 1, prCount: 1 }).stage === 'retro')
+
+// The inference that makes issue trackers work: `to-tickets` consumes a spec, so
+// tickets on the tracker prove the spec step ran even when the spec is not a file
+// this project can show.
+check('stage: tickets imply a spec even with no spec file', deriveStage({ ...trackerFacts, ticketTotal: 3, ticketDone: 0 }).stage === 'implement', deriveStage({ ...trackerFacts, ticketTotal: 3, ticketDone: 0 }).stage)
+check('stage: a spec without a configured tracker is still setup (the missing piece wins)', deriveStage({ specCount: 4, ticketTotal: 9 }).stage === 'setup')
+
+check('stage: completed is every stage before the current one', deriveStage({ ...trackerFacts, specCount: 1 }).completed.join(',') === 'setup,grill,spec', deriveStage({ ...trackerFacts, specCount: 1 }).completed.join(','))
+check('stage: every stage names the skill that owns it', STAGES.every((entry) => typeof entry.id === 'string' && typeof entry.skill === 'string') && STAGES.length === 8)
+
+check('stage: the evidence says which stage it decided', deriveStage({ ...trackerFacts, specCount: 1 }).evidence[0].stage === 'tickets')
+
+const overridden = deriveStage({ ...trackerFacts, specCount: 1, override: 'pr' })
+check('stage: an override changes the stage', overridden.stage === 'pr')
+check('stage: an override keeps the derivation, so both can be shown', overridden.derived === 'tickets', String(overridden.derived))
+check('stage: an override is flagged', overridden.overridden === true)
+check('stage: an unknown override is ignored rather than accepted', deriveStage({ ...trackerFacts, specCount: 1, override: 'nonsense' }).stage === 'tickets')
+check('stage: completed follows the override, not the derivation', overridden.completed.includes('spec') === true && overridden.completed.includes('tickets') === true)
+
+const wayfinder = deriveStage({ ...trackerFacts, specCount: 1, ticketTotal: 30, ticketDone: 2, frontierCount: 20 })
+check('stage: a large open workload suggests the wayfinder bypass', wayfinder.bypass.some((entry) => entry.skill === 'wayfinder'), JSON.stringify(wayfinder.bypass))
+check('stage: the bypass states the number that triggered it', wayfinder.bypass[0].note.includes('28') && wayfinder.bypass[0].note.includes('12'), wayfinder.bypass[0].note)
+check('stage: a small workload suggests no bypass', deriveStage({ ...trackerFacts, specCount: 1, ticketTotal: 3, ticketDone: 1 }).bypass.length === 0)
+check('stage: the threshold is reported so the rule is inspectable', wayfinder.facts.wayfinderThreshold === 12)
+const mapWithoutTickets = deriveStage({ ...trackerFacts, planCount: 1 })
+check('stage: a planning map with no tickets points at cutting tickets', mapWithoutTickets.bypass.some((entry) => entry.skill === 'to-tickets'), JSON.stringify(mapWithoutTickets.bypass))
+check('stage: a map counts as spec-shaped progress, not as grill', deriveStage({ ...trackerFacts, planCount: 1 }).stage === 'tickets', deriveStage({ ...trackerFacts, planCount: 1 }).stage)
 
 // ── 2. host routes ────────────────────────────────────────────────────────────
 
@@ -751,6 +845,73 @@ if (CLIENT_ONLY) {
       console.log(`  skip live GitHub board: ${liveBoard.reason.code} — ${liveBoard.reason.message}`)
     } else {
       check('board: the live GitHub board is readable', false, JSON.stringify(liveBoard.reason ?? liveBoard.state))
+    }
+
+    // ── stage: derivation over HTTP, and the persisted badge ─────────────────
+    const stageProject = tempDir('dsh-wb-stage-')
+    writeDeclaration(stageProject, 'Local markdown')
+    fs.mkdirSync(path.join(stageProject, '.scratch', 'feat', 'issues'), { recursive: true })
+    const stageUrl = (target) => `/api/developer-workbench/stage?path=${encodeURIComponent(target)}`
+
+    const freshStage = await getJson(stageUrl(stageProject))
+    check('stage: a tracked project with nothing in it is at grill', freshStage.stage === 'grill', String(freshStage.stage))
+    check('stage: the whole pipeline is returned', Array.isArray(freshStage.stages) && freshStage.stages.length === 8, String(freshStage.stages?.length))
+    check('stage: every step names the skill that owns it', freshStage.stages.every((entry) => typeof entry.skill === 'string'))
+
+    fs.writeFileSync(path.join(stageProject, '.scratch', 'feat', 'spec.md'), '# Spec\n', 'utf8')
+    const afterSpec = await getJson(stageUrl(stageProject))
+    check('stage: adding a spec advances to tickets', afterSpec.stage === 'tickets', String(afterSpec.stage))
+    check('stage: the evidence names why', afterSpec.evidence[0]?.code === 'spec-without-tickets', String(afterSpec.evidence[0]?.code))
+
+    fs.writeFileSync(path.join(stageProject, '.scratch', 'feat', 'issues', '01-a.md'), '# 01: A\r\n\r\n**Status:** ready-for-agent\r\n\r\n- [ ] x\r\n', 'utf8')
+    const afterTicket = await getJson(stageUrl(stageProject))
+    check('stage: adding a ticket advances to implement', afterTicket.stage === 'implement', String(afterTicket.stage))
+    check('stage: the frontier count reaches the derivation facts', afterTicket.facts.frontierCount === 1, String(afterTicket.facts.frontierCount))
+
+    fs.writeFileSync(path.join(stageProject, '.scratch', 'feat', 'issues', '01-a.md'), '# 01: A\r\n\r\n**Status:** resolved\r\n\r\n- [x] x\r\n', 'utf8')
+    const afterDone = await getJson(stageUrl(stageProject))
+    check('stage: finishing every ticket advances to review', afterDone.stage === 'review', String(afterDone.stage))
+
+    // Persistence is what lets the left column show a stage without re-reading
+    // every tracker on every overview request.
+    const stateFile = (await getJson('/api/developer-workbench/health')).stateFile
+    const persistedState = JSON.parse(fs.readFileSync(stateFile, 'utf8'))
+    const persistedEntry = Object.values(persistedState.projects).find((row) => row.path === stageProject)
+    check('stage: the derived stage is persisted for the cheap badge', persistedEntry?.stage?.id === 'review', JSON.stringify(persistedEntry?.stage))
+    check('stage: a derived stage is not recorded as a manual override', persistedEntry?.stage?.overridden === false)
+
+    const undeclaredStage = tempDir('dsh-wb-stage-none-')
+    const setupStage = await getJson(stageUrl(undeclaredStage))
+    check('stage: an undeclared project is at setup', setupStage.stage === 'setup', String(setupStage.stage))
+    check('stage: setup says no tracker is declared', setupStage.evidence[0]?.code === 'no-tracker')
+
+    const noPathStage = await fetch(`${BASE}/api/developer-workbench/stage`)
+    check('stage: a missing path parameter is a 400', noPathStage.status === 400, `HTTP ${noPathStage.status}`)
+
+    // The pin round-trip: a pin must never replace the derivation, only sit over it.
+    const pinned = await postJson('/api/developer-workbench/projects/stage', { path: stageProject, stage: 'pr' })
+    check('stage pin: a valid stage is accepted', pinned.status === 200 && pinned.body?.stageOverride === 'pr', `HTTP ${pinned.status}`)
+    const afterPin = await getJson(stageUrl(stageProject))
+    check('stage pin: the derivation keeps running beside the pin', afterPin.stage === 'pr' && afterPin.derived === 'review' && afterPin.overridden === true, JSON.stringify({ stage: afterPin.stage, derived: afterPin.derived, overridden: afterPin.overridden }))
+    const pinnedState = JSON.parse(fs.readFileSync(stateFile, 'utf8'))
+    const pinnedEntry = Object.values(pinnedState.projects).find((row) => row.path === stageProject)
+    check('stage pin: the persisted badge records the override', pinnedEntry?.stage?.id === 'pr' && pinnedEntry?.stage?.overridden === true, JSON.stringify(pinnedEntry?.stage))
+    const badPin = await postJson('/api/developer-workbench/projects/stage', { path: stageProject, stage: 'nonsense' })
+    check('stage pin: an unknown stage is refused with the accepted list', badPin.status === 400 && Array.isArray(badPin.body?.accepted), `HTTP ${badPin.status}`)
+    const cleared = await postJson('/api/developer-workbench/projects/stage', { path: stageProject, stage: null })
+    check('stage pin: a null stage clears the pin', cleared.status === 200 && cleared.body?.stageOverride === null, `HTTP ${cleared.status}`)
+    const afterClear = await getJson(stageUrl(stageProject))
+    check('stage pin: clearing returns to the derived stage', afterClear.stage === 'review' && afterClear.overridden === false, JSON.stringify({ stage: afterClear.stage, overridden: afterClear.overridden }))
+
+    // Live: this repository. Guarded on the board being readable so an offline
+    // environment skips rather than failing for the wrong reason.
+    const liveStage = await getJson(stageUrl(path.resolve(HERE, '..', '..')))
+    if (liveStage.board?.state === 'ready') {
+      check('stage: the live repository derives a real stage', ['tickets', 'implement', 'review', 'pr', 'retro'].includes(liveStage.stage), String(liveStage.stage))
+      check('stage: the live repository resolves a github tracker', liveStage.tracker?.kind === 'github', String(liveStage.tracker?.kind))
+      check('stage: the live derivation sees finished tickets', liveStage.facts.ticketDone > 0, String(liveStage.facts.ticketDone))
+    } else {
+      console.log(`  skip live stage: board state ${liveStage.board?.state} (${liveStage.board?.reason?.code ?? 'n/a'})`)
     }
 
     // ── overview ─────────────────────────────────────────────────────────────

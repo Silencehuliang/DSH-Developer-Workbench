@@ -81,7 +81,7 @@ function walk(dir, extensions, budget, depth) {
 /**
  * Specs and planning maps this project keeps for a local-file tracker.
  * @param root - project root.
- * @returns absolute paths.
+ * @returns `{ path, kind }` entries; a map is not a spec.
  */
 function collectScratchPlans(root) {
   const scratch = path.join(root, '.scratch')
@@ -96,7 +96,7 @@ function collectScratchPlans(root) {
     if (!entry.isDirectory()) continue
     for (const name of ['spec.md', 'map.md']) {
       const candidate = path.join(scratch, entry.name, name)
-      if (isFile(candidate)) found.push(candidate)
+      if (isFile(candidate)) found.push({ path: candidate, kind: name === 'map.md' ? 'plan' : 'spec' })
     }
   }
   return found
@@ -113,14 +113,14 @@ const GROUPS = [
     id: 'spec',
     label: 'Specs and plans',
     collect: (root, budget) => [
-      ...walk(path.join(root, 'docs', 'specs'), ['.md'], budget, 3),
+      ...walk(path.join(root, 'docs', 'specs'), ['.md'], budget, 3).map((target) => ({ path: target, kind: 'spec' })),
       ...collectScratchPlans(root),
     ],
   },
   {
     id: 'adr',
     label: 'ADRs',
-    collect: (root, budget) => walk(path.join(root, 'docs', 'adr'), ['.md'], budget, 3),
+    collect: (root, budget) => walk(path.join(root, 'docs', 'adr'), ['.md'], budget, 3).map((target) => ({ path: target, kind: 'adr' })),
   },
   {
     id: 'glossary',
@@ -128,7 +128,7 @@ const GROUPS = [
     collect: (root) => [
       path.join(root, 'GLOSSARY.md'),
       path.join(root, 'GLOSSARY-MAP.md'),
-    ].filter(isFile),
+    ].filter(isFile).map((target) => ({ path: target, kind: 'glossary' })),
   },
 ]
 
@@ -136,9 +136,10 @@ const GROUPS = [
  * Describe one file for a list row.
  * @param absolute - absolute file path.
  * @param root - project root, used for the display name.
+ * @param kind - which artifact this is, so the stage derivation can count by kind.
  * @returns the row, or null when the file cannot be read.
  */
-function describeItem(absolute, root) {
+function describeItem(absolute, root, kind) {
   let stats
   try {
     stats = fs.statSync(absolute)
@@ -148,6 +149,7 @@ function describeItem(absolute, root) {
   return {
     name: path.relative(root, absolute).split(path.sep).join('/'),
     path: absolute,
+    kind,
     bytes: stats.size,
     mtime: stats.mtime.toISOString(),
   }
@@ -175,10 +177,11 @@ export function scanArtifacts(projectPath, options = {}) {
   for (const group of GROUPS) {
     const items = []
     const seen = new Set()
-    for (const absolute of group.collect(root, budget)) {
+    for (const entry of group.collect(root, budget)) {
+      const absolute = typeof entry === 'string' ? entry : entry.path
       if (seen.has(absolute)) continue
       seen.add(absolute)
-      const item = describeItem(absolute, root)
+      const item = describeItem(absolute, root, typeof entry === 'string' ? group.id : entry.kind ?? group.id)
       if (item === null) continue
       items.push(item)
     }
@@ -192,7 +195,7 @@ export function scanArtifacts(projectPath, options = {}) {
   for (const record of handoffs) {
     if (typeof record?.path !== 'string') continue
     const absolute = path.resolve(record.path)
-    const item = describeItem(absolute, path.dirname(absolute))
+    const item = describeItem(absolute, path.dirname(absolute), 'handoff')
     if (item === null) continue
     handoffItems.push({ ...item, name: path.basename(absolute), createdAt: record.createdAt ?? null, fromState: true })
   }

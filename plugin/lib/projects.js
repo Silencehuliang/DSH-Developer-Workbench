@@ -49,8 +49,12 @@ export async function describeProject({ workspace, state }) {
     tracker,
     /** The user's own decisions, kept separate from anything derived. */
     feature: record?.feature ?? null,
-    /** Placeholder until the stage derivation ticket lands. */
-    stage: record?.stageOverride ?? null,
+    /**
+     * The last derived stage, persisted by `/stage` so the left column can show
+     * one without re-reading every tracker on every overview request. Null until
+     * the project has been opened at least once.
+     */
+    stage: record?.stage ?? null,
     stageOverride: record?.stageOverride ?? null,
     neverDispatched: record?.lastSessionId === undefined || record.lastSessionId === null,
   }
