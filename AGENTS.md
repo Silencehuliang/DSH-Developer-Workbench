@@ -41,7 +41,7 @@ node plugin/scripts/verify.mjs
 
 ### Issue tracker
 
-Issues and specs live as GitHub issues on `Silencehuliang/dsh-developer-workbench`, driven by the `gh` CLI. See `docs/agents/issue-tracker.md`.
+Issues and specs live as GitHub issues on `Silencehuliang/DSH-Developer-Workbench`, driven by the `gh` CLI. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

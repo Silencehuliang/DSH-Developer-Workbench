@@ -2,7 +2,7 @@
 
 Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all operations.
 
-Repo: `Silencehuliang/dsh-developer-workbench` (`gh` infers it from `git remote -v` when run inside the clone).
+Repo: `Silencehuliang/DSH-Developer-Workbench` (`gh` infers it from `git remote -v` when run inside the clone).
 
 ## Conventions
 
