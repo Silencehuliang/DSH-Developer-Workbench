@@ -34,8 +34,25 @@ window.__ModuleLoader__.load({
     /** Base path of the host half's routes. */
     const ROUTE_BASE = '/api/developer-workbench'
 
-    /** Services this plugin's browser half needs. */
-    const inject = ['slots', 'locale', 'uiWorkspace']
+    /**
+     * Services this plugin's browser half needs.
+     *
+     * Cordis refuses to hand over a service that is not listed here, and it gates
+     * **namespaced services individually**: `ctx.remote.session` needs
+     * `remote.session` declared, and declaring only `remote` still throws at the
+     * moment of access. That is exactly how dispatch failed — first with
+     * `"remote"`, then with `"remote.session"` once `remote` was added.
+     *
+     * The host's own client plugins declare the same shape, e.g.
+     * `@deepseek-ai/dsh-api-session-controller`:
+     * `["connection", "fileUpload", "typert", "remote", "remote.commands",
+     *   "remote.session", "remote.subagents"]`.
+     *
+     * `verify.mjs` scans this file for the services it reaches for, and
+     * `npm run ui` clicks the button that would throw — static and runtime checks
+     * for the same class of mistake.
+     */
+    const inject = ['slots', 'locale', 'uiWorkspace', 'remote', 'remote.session']
 
     const zh = {
       panel: '开发工作台',

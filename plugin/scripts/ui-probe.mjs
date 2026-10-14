@@ -56,7 +56,10 @@ function findBrowser() {
 const BROWSER = findBrowser()
 
 const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-ui-probe-'))
-const shotPath = process.argv[2] ?? path.join(os.tmpdir(), 'dsh-ui-probe.png')
+const shotArg = process.argv.slice(2).find((argument) => !argument.startsWith('--'))
+const shotPath = shotArg ?? path.join(os.tmpdir(), 'dsh-ui-probe.png')
+/** Dispatch a real session? Off by default: it creates a session in the user's GUI. */
+const SEND = process.argv.includes('--send')
 
 let passed = 0
 const failures = []
@@ -386,6 +389,102 @@ try {
   })()`)
   console.log(`       self-check : ${selfCheck}`)
   check('the skill self-check renders', typeof selfCheck === 'string' && selfCheck.length > 10, String(selfCheck))
+
+  // ── dispatch: the confirmation must open, and must not fail ────────────────
+  //
+  // This is where the plugin first broke in the wild: the dialog never appeared
+  // and the panel showed `派发失败：cannot get property "remote" without inject`,
+  // because the browser half reached for `ctx.remote` without declaring it.
+
+  console.log('\ndispatch')
+  if (SEND) {
+    // Dispatch into this repository, not whichever row happens to be second.
+    const targetTitle = process.env.DSH_UI_PROJECT ?? 'Developer Workbench'
+    const picked = await session.eval(`(() => {
+      const row = [...document.querySelectorAll('.dw-project')].find((node) => node.innerText.includes(${JSON.stringify(targetTitle)}))
+      if (!row) return 'not-found'
+      row.click()
+      return 'clicked'
+    })()`)
+    console.log(`       dispatch target: ${targetTitle} (${picked})`)
+    check('a project to dispatch into is selected', picked === 'clicked', String(picked))
+    await sleep(3000)
+  }
+
+  const openedDialog = await session.eval(`(() => {
+    const button = document.querySelector('.dw-dispatch-open')
+    if (!button) return 'no-dispatch-button'
+    button.click()
+    return 'clicked'
+  })()`)
+  check('the stage panel offers a dispatch action', openedDialog === 'clicked', String(openedDialog))
+
+  const dialogShown = await session.waitFor(`!!document.querySelector('.dw-dispatch')`, 'the dispatch dialog', 40000)
+  check('clicking dispatch opens the confirmation dialog', dialogShown === true)
+
+  const dialog = await session.eval(`(() => {
+    const node = document.querySelector('.dw-dispatch')
+    const text = document.querySelector('.dw-dispatch-text')
+    return {
+      text: node ? node.innerText.replace(/\\s+/g, ' ').trim().slice(0, 320) : null,
+      prompt: text ? String(text.value ?? '').slice(0, 400) : null,
+      failureBanner: document.body.innerText.includes('派发失败'),
+      sendLabel: document.querySelector('.dw-dispatch-send') ? document.querySelector('.dw-dispatch-send').innerText.trim() : null,
+    }
+  })()`)
+  console.log(`       dialog: ${dialog?.text}`)
+  check('the dispatch dialog did not report a failure', dialog?.failureBanner === false, 'the 派发失败 banner is on screen')
+  check('the dialog carries a real, non-empty prompt', typeof dialog?.prompt === 'string' && dialog.prompt.length > 40, JSON.stringify(dialog?.prompt ?? null).slice(0, 200))
+  check('the prompt names the skill it will run', typeof dialog?.prompt === 'string' && dialog.prompt.includes('SKILL.md'), String(dialog?.prompt ?? '').slice(0, 160))
+
+  if (SEND) {
+    console.log('\nsending for real (--send)')
+    // The dialog's prompt is editable on purpose, which is what makes a harmless
+    // end-to-end run possible: the real path (create session → send → navigate)
+    // is exercised while the agent receives something that asks it to do nothing.
+    const SAFE_PROMPT = '这是一条自动化验收测试消息，用来验证工作台的派发链路。请只回复「收到」，不要读取或修改任何文件，不要执行任何命令，不要创建任何东西。'
+    const rewritten = await session.eval(`(() => {
+      const textarea = document.querySelector('.dw-dispatch-text')
+      if (!textarea) return 'no-textarea'
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set
+      setter.call(textarea, ${JSON.stringify(SAFE_PROMPT)})
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+      return textarea.value.length > 0 ? 'rewritten' : 'empty'
+    })()`)
+    check('the test prompt is substituted into the editable dialog', rewritten === 'rewritten', String(rewritten))
+    await sleep(500)
+
+    const clickedSend = await session.eval(`(() => {
+      const button = document.querySelector('.dw-dispatch-send')
+      if (!button) return 'no-send-button'
+      if (button.disabled) return 'disabled'
+      button.click()
+      return 'clicked'
+    })()`)
+    check('the send button is enabled and clickable', clickedSend === 'clicked', String(clickedSend))
+
+    await session.waitFor(
+      `!document.querySelector('.dw-dispatch') || document.body.innerText.includes('派发失败')`,
+      'the send to settle',
+      90000,
+    )
+    const afterSend = await session.eval(`(() => ({
+      dialogStillOpen: !!document.querySelector('.dw-dispatch'),
+      failureBanner: document.body.innerText.includes('派发失败'),
+      // The message is the whole point of a failure: capture it, not the page.
+      failureText: (() => {
+        const node = [...document.querySelectorAll('*')].find((element) => element.children.length === 0 && element.textContent.includes('派发失败'))
+        return node ? node.parentElement.innerText.replace(/\\s+/g, ' ').trim().slice(0, 300) : null
+      })(),
+      bodyHint: document.body.innerText.replace(/\\s+/g, ' ').slice(0, 200),
+    }))()`)
+    check('sending produced no failure', afterSend?.failureBanner === false, String(afterSend?.failureText ?? afterSend?.bodyHint).slice(0, 300))
+    check('the confirmation closed after sending', afterSend?.dialogStillOpen === false, String(afterSend?.failureText ?? '').slice(0, 300))
+    console.log(`       after send: dialogStillOpen=${afterSend?.dialogStillOpen} failure=${JSON.stringify(afterSend?.failureText)}`)
+  } else {
+    console.log('       (pass --send to actually dispatch; the default run only opens the dialog)')
+    await session.eval(`(() => { const b = document.querySelector('.dw-dispatch-close'); if (b) b.click(); return 'closed' })()`)
+  }
 
   // ── console health ─────────────────────────────────────────────────────────
 

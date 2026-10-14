@@ -328,14 +328,21 @@ function firstLine(text) {
 /**
  * Read every issue of a GitHub repository, with its native blocking edges.
  *
+ * GraphQL cannot help: its `Issue` type exposes no blocking field (checked by
+ * introspection), so one REST call per issue is the only way to learn *which*
+ * issues block which. Those calls are cheap in aggregate but each `gh`
+ * invocation costs most of a second before it reaches the network, so the total
+ * is bounded by waves — hence the wide default concurrency.
+ *
  * @param options - read inputs.
  * @param options.run - command runner.
  * @param options.owner - repository owner.
  * @param options.repo - repository name.
  * @param options.limit - largest number of issues to read.
+ * @param options.concurrency - how many edge reads to keep in flight.
  * @returns `{ ok: true, tickets, notes }` or `{ ok: false, code, message }`.
  */
-export async function readGitHubTickets({ run, owner, repo, limit = MAX_TICKETS, concurrency = 6 }) {
+export async function readGitHubTickets({ run, owner, repo, limit = MAX_TICKETS, concurrency = 16 }) {
   const slug = `${owner}/${repo}`
   const list = await run('gh', [
     'issue', 'list',

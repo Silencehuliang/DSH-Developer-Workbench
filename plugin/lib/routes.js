@@ -437,29 +437,72 @@ export function buildRoutes({ ctx, store, info, now = () => new Date(), run = cr
   }
 
   /**
-   * One board read per GitHub project per short window, shared by concurrent callers.
+   * The GitHub board: single-flight, cached, and stale-while-revalidate.
    *
-   * **Only the GitHub read is cached.** That read pays for a dozen `gh`
-   * subprocesses, and opening a project asks for the board twice (the board route
-   * and the stage route), so single-flight halves the cost and the TTL keeps a
-   * refresh from paying it again. The local-markdown read is a directory listing
-   * costing about a millisecond — caching that only buys staleness: it served an
-   * empty board for seconds after tickets appeared on disk, which is both wrong
-   * for the user and fatal for a test that writes a ticket and reads it back.
+   * **Only the GitHub read is cached.** It pays for a `gh api` call per issue,
+   * and each `gh` invocation costs roughly a second before it has even reached
+   * the network — so the whole read is bounded by *waves*, not by work. Measured
+   * on this repository: 20 issues at concurrency 6 took 4.7 s, which is what made
+   * every click on a project feel broken.
    *
-   * A failed read is evicted rather than cached, so a transient failure cannot stick.
+   * Three properties make it stop costing the user time:
+   *
+   * - **single-flight** — opening a project asks twice (the board route and the
+   *   stage route); both share one read.
+   * - **cached** for {@link BOARD_TTL_MS}.
+   * - **stale-while-revalidate** — past the TTL the previous value is returned
+   *   *immediately* and refreshed behind the caller, so only the very first read
+   *   of a project ever waits. A read that failed is evicted rather than cached.
+   *
+   * The local-markdown read is deliberately not cached: it is a directory
+   * listing, and caching it only bought staleness — it served an empty board
+   * after tickets appeared on disk, which broke the acceptance walk.
    */
   const boardCache = new Map()
-  const BOARD_TTL_MS = 10000
+  const boardRefreshing = new Set()
+  const BOARD_TTL_MS = 30000
+
+  /** Read a GitHub board and remember the value. */
+  const readAndStoreBoard = (key, resolved, tracker) => {
+    const promise = boardFor(resolved, tracker)
+      .then((value) => {
+        boardCache.set(key, { at: Date.now(), value, promise: Promise.resolve(value) })
+        return value
+      })
+      .catch((error) => {
+        boardCache.delete(key)
+        throw error
+      })
+    boardCache.set(key, { at: Date.now(), promise })
+    return promise
+  }
+
+  /** Refresh a stale entry without making the caller wait for it. */
+  const refreshBoardBehind = (key, resolved, tracker) => {
+    if (boardRefreshing.has(key)) return
+    boardRefreshing.add(key)
+    boardFor(resolved, tracker)
+      .then((value) => {
+        boardCache.set(key, { at: Date.now(), value, promise: Promise.resolve(value) })
+      })
+      .catch(() => {
+        // A failed background refresh leaves the last good value in place.
+      })
+      .finally(() => {
+        boardRefreshing.delete(key)
+      })
+  }
+
   const boardForCached = (resolved, tracker) => {
     if (tracker?.kind !== 'github') return boardFor(resolved, tracker)
     const key = `${tracker.kind}:${resolved}`
     const cached = boardCache.get(key)
-    if (cached !== undefined && Date.now() - cached.at < BOARD_TTL_MS) return cached.promise
-    const promise = boardFor(resolved, tracker)
-    boardCache.set(key, { at: Date.now(), promise })
-    promise.catch(() => boardCache.delete(key))
-    return promise
+    if (cached === undefined) return readAndStoreBoard(key, resolved, tracker)
+    if (cached.value !== undefined) {
+      if (Date.now() - cached.at >= BOARD_TTL_MS) refreshBoardBehind(key, resolved, tracker)
+      return Promise.resolve(cached.value)
+    }
+    return cached.promise
   }
 
   /** Drop a cached board, so the next read sees what just changed. */

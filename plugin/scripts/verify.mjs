@@ -147,7 +147,7 @@ function exerciseClientBundle() {
 
   plugin.apply(fakeCtx)
 
-  return { bundleId: captured.id, plugin, localeRegistrations, slotRegistrations, slotPeeks }
+  return { bundleId: captured.id, plugin, localeRegistrations, slotRegistrations, slotPeeks, source: code }
 }
 
 console.log('client bundle')
@@ -185,6 +185,28 @@ check('settings page: sits after the shipped sections', settingsSeat?.options.or
 check('settings page: declares a localized label thunk', typeof settingsSeat?.options.label === 'function')
 check('settings page: carries its own inject face', typeof settingsSeat?.options.inject === 'function')
 check('settings page: registered declaratively like the rest', client.slotPeeks.includes('settings.section'))
+
+// Cordis refuses an undeclared service at the moment it is reached for, so an
+// omission is invisible until the exact button that needs it is clicked — which
+// is how dispatch shipped broken. Scan the bundle for every `ctx.<name>` and
+// require the inject list to cover it.
+const CORE_CONTEXT_MEMBERS = new Set(['get', 'set', 'effect', 'on', 'once', 'inject', 'provide', 'scope', 'plugin', 'logger', 'root'])
+const reachedServices = [...new Set([...client.source.matchAll(/\bctx\.([A-Za-z_$][\w$]*)/g)].map((match) => match[1]))]
+const undeclared = reachedServices.filter((name) => !CORE_CONTEXT_MEMBERS.has(name) && !client.plugin.inject.includes(name))
+check('client half reaches for services, so the scan is not vacuous', reachedServices.length >= 3, JSON.stringify(reachedServices))
+check('client half declares every service it reaches for', undeclared.length === 0, `undeclared: ${undeclared.join(', ')} (declared: ${client.plugin.inject.join(', ')})`)
+check('client half declares the remote service that dispatch needs', client.plugin.inject.includes('remote'))
+
+// Cordis gates namespaced services individually: reaching `ctx.remote.session`
+// with only `remote` declared still throws at the moment of access — which is
+// how the send path failed a second time. A service path cannot be told from a
+// method chain statically, so this list is curated from the host's own client
+// plugins; `npm run ui` clicking the send button is the runtime backstop.
+const NAMESPACED_SERVICES = ['remote.session', 'remote.workspace', 'remote.commands', 'remote.subagents', 'remote.settings']
+const usedNamespacedServices = NAMESPACED_SERVICES.filter((name) => client.source.includes(`ctx.${name}`))
+const undeclaredNamespaced = usedNamespacedServices.filter((name) => !client.plugin.inject.includes(name))
+check('the namespaced-service scan is not vacuous', usedNamespacedServices.length > 0, JSON.stringify(usedNamespacedServices))
+check('client half declares the namespaced services it reaches for', undeclaredNamespaced.length === 0, `undeclared: ${undeclaredNamespaced.join(', ')} (declared: ${client.plugin.inject.join(', ')})`)
 
 const icon = panelRow?.component?.({ size: 16, active: true })
 check('icon renders a sized glyph', icon !== undefined && icon.props?.width === 16)
