@@ -669,6 +669,15 @@ window.__ModuleLoader__.load({
         marginBottom: 7,
       },
       rowActive: { borderColor: 'var(--dsw-alias-brand-primary)', background: 'var(--dsw-alias-bg-layer-2)' },
+      /** Reset the user-agent button styling so a row can be a real button. */
+      rowButton: {
+        display: 'block',
+        width: '100%',
+        textAlign: 'left',
+        font: 'inherit',
+        color: 'inherit',
+        cursor: 'pointer',
+      },
       rowHead: { display: 'flex', alignItems: 'baseline', gap: 7 },
       rowTitle: { fontSize: 13, fontWeight: 600, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
       meta: { display: 'flex', gap: 9, flexWrap: 'wrap', marginTop: 5, fontSize: 11, color: 'var(--dsw-alias-label-secondary)' },
@@ -696,7 +705,9 @@ window.__ModuleLoader__.load({
       },
       buttonPrimary: {
         background: 'var(--dsw-alias-brand-primary)',
-        color: '#fff',
+        // Text on the brand colour, read from the scheme's own base token rather
+        // than a literal: a hardcoded `#fff` fails on a light accent.
+        color: 'var(--dsw-alias-bg-base)',
         border: '0',
         borderRadius: 8,
         padding: '6px 12px',
@@ -945,12 +956,16 @@ window.__ModuleLoader__.load({
         )
       }
 
+      // A real button: the row is interactive, and a `div` with `onClick` cannot
+      // be reached from the keyboard at all. `rowButton` resets the UA styling.
       return h(
-        'div',
+        'button',
         {
+          type: 'button',
           key: project.key,
           className: active === true ? 'dw-project dw-project-active' : 'dw-project',
-          style: active === true ? { ...S.row, ...S.rowActive } : S.row,
+          style: active === true ? { ...S.row, ...S.rowButton, ...S.rowActive } : { ...S.row, ...S.rowButton },
+          disabled: typeof onSelect !== 'function',
           onClick: typeof onSelect === 'function' ? () => onSelect(project) : undefined,
         },
         children,
@@ -2679,7 +2694,6 @@ window.__ModuleLoader__.load({
       STYLE_ID,
       shortSessionId,
       describeRemoteFailure,
-      StagePanel,
       StagePipeline,
       StageStep,
       stageLabel,

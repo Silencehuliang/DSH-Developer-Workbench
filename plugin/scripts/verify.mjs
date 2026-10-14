@@ -755,6 +755,58 @@ check('interface language: a Chinese interface asks for Chinese prompts', seam.i
 check('interface language: an unreadable locale falls back to Chinese', seam.interfaceLanguage({}) === 'zh' && seam.interfaceLanguage(undefined) === 'zh')
 check('interface language: a throwing locale service cannot break dispatch', seam.interfaceLanguage({ getSnapshot: () => { throw new Error('nope') } }) === 'zh')
 
+// Every colour a component actually renders, so the no-literal rule is audited
+// over the inline styles too — the stylesheet check alone let a `#fff` through.
+/**
+ * Collect every inline style value in a rendered tree.
+ * @param node - an element returned by the stub `createElement`.
+ * @returns the style values, as strings.
+ */
+function styleStrings(node) {
+  const found = []
+  const walk = (current) => {
+    if (current === null || current === undefined || typeof current === 'boolean') return
+    if (typeof current === 'string' || typeof current === 'number') return
+    if (Array.isArray(current)) {
+      for (const child of current) walk(child)
+      return
+    }
+    if (typeof current.type === 'function') {
+      const props = { ...(current.props ?? {}) }
+      if (props.children === undefined && current.children !== undefined) props.children = current.children
+      walk(current.type(props))
+      return
+    }
+    const style = current.props?.style
+    if (style !== undefined && style !== null && typeof style === 'object') {
+      for (const value of Object.values(style)) {
+        if (typeof value === 'string') found.push(value)
+      }
+    }
+    walk(current.props?.children !== undefined ? current.props.children : current.children)
+  }
+  walk(node)
+  return found
+}
+
+const styledTrees = [
+  seam.SessionProjectBar({ project: boundProject, stage: 'implement', t: zhT, onAdvance: () => {} }),
+  seam.TurnTailActions({ project: boundProject, t: zhT, onRecord: () => {}, onAdvance: () => {}, onHandoff: () => {} }),
+  seam.SessionHoverLine({ project: boundProject, stage: 'implement', t: zhT }),
+  seam.ProjectRow({ project: boundProject, t: zhT, onSelect: () => {} }),
+  seam.SkillGrid({ status: selfCheckFixture, t: zhT }),
+  seam.TicketBoard({ board: boardFixture, t: zhT }),
+  seam.ArtifactGroups({ scan: handoffScan, t: zhT, onOpen: () => {}, onResume: () => {} }),
+  seam.ArtifactPreview({ preview: { status: 'ready', item: { path: '/x' }, result: { lines: ['a'], totalLines: 1, hasMore: false, bytes: 1 } }, t: zhT, onLoadMore: () => {}, onClose: () => {} }),
+  seam.StagePipeline({ stage: stageFixture, t: zhT, onOverride: () => {}, onDispatch: () => {}, onHandoff: () => {} }),
+  seam.SettingsSection({ settings: seam.SETTINGS_FALLBACK, t: zhT, onChange: () => {} }),
+  seam.DispatchDialog(dispatchProps),
+]
+const renderedColours = styledTrees.flatMap(styleStrings)
+check('styles: the audit really walked rendered trees, not an empty list', renderedColours.length > 50, String(renderedColours.length))
+const literalColours = renderedColours.filter((value) => /#[0-9a-fA-F]{3,8}\b/.test(value) || /rgb\(|rgba\(|hsl\(/i.test(value))
+check('styles: no component renders a hardcoded colour', literalColours.length === 0, literalColours.slice(0, 3).join(' | '))
+
 // Both dictionaries must define the same keys, or one language renders raw keys.
 const zhKeys = Object.keys(seam.dicts.zh).sort()
 const enKeys = Object.keys(seam.dicts.en).sort()
@@ -1188,6 +1240,22 @@ if (CLIENT_ONLY) {
   console.log(`\nhost routes @ ${BASE}`)
 
   /**
+   * Probe the server once, before any fixture is built.
+   *
+   * This is the ONLY thing allowed to skip the host suite. Previously *any*
+   * exception raised anywhere inside the suite printed "skip host routes" while
+   * the run still exited 0 — so a broken route, or a bug in this very file, could
+   * hide behind the word "skip". An unreachable server is a skip; an exception
+   * from a reachable one is a failure.
+   */
+  const hostReachable = await fetch(`${BASE}/api/developer-workbench/health`, { signal: AbortSignal.timeout(4000) })
+    .then((response) => response.ok)
+    .catch(() => false)
+  if (!hostReachable) {
+    console.log(`  no DSH is answering at ${BASE}; the host assertions below will be skipped.`)
+  }
+
+  /**
    * Fetch JSON, or throw with the status in the message.
    * @param route - path beginning with `/`.
    * @returns the parsed body.
@@ -1615,8 +1683,14 @@ if (CLIENT_ONLY) {
     })
     check('bind: a malformed body is a 500, not a crash', badJson.status === 500, `HTTP ${badJson.status}`)
   } catch (error) {
-    console.log(`  skip host routes: ${error.message}`)
-    console.log('       (start DSH, or pass --base=<url>, to run these)')
+    if (hostReachable !== true) {
+      console.log(`  skip host routes: ${error.message}`)
+      console.log(`       (no DSH answering at ${BASE}; start it, or pass --base=<url>)`)
+    } else {
+      // A reachable server that still produced an exception is a failure, and
+      // must never be reported as a skip.
+      check('the host suite runs to completion', false, String(error?.stack ?? error).split('\n').slice(0, 2).join(' | '))
+    }
   }
 }
 
