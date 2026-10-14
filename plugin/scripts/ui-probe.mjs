@@ -433,6 +433,17 @@ try {
     }
   })()`)
   console.log(`       dialog: ${dialog?.text}`)
+  const posture = await session.eval(`(() => {
+    const select = document.querySelector('.dw-preset')
+    const unknown = document.querySelector('.dw-preset-unknown')
+    return {
+      picker: !!select,
+      options: select ? [...select.options].map((option) => option.textContent) : [],
+      reason: unknown ? unknown.getAttribute('title') : null,
+    }
+  })()`)
+  console.log(`       posture: ${JSON.stringify(posture)}`)
+  check('the dispatch dialog exposes the permission posture', posture?.picker === true || posture?.reason !== null, JSON.stringify(posture))
   check('the dispatch dialog did not report a failure', dialog?.failureBanner === false, 'the 派发失败 banner is on screen')
   check('the dialog carries a real, non-empty prompt', typeof dialog?.prompt === 'string' && dialog.prompt.length > 40, JSON.stringify(dialog?.prompt ?? null).slice(0, 200))
   check('the prompt names the skill it will run', typeof dialog?.prompt === 'string' && dialog.prompt.includes('SKILL.md'), String(dialog?.prompt ?? '').slice(0, 160))

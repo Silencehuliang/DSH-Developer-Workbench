@@ -19,7 +19,7 @@ import { PROMPT_STAGES, buildDispatchPrompt, findDispatchable, readTriageLabels 
 import { PROMPT_LANGUAGES, SETTINGS_DEFAULTS, WAYFINDER_RANGE, normalizeSettings, resolvePromptLanguage } from './settings.js'
 import { STAGES, deriveStage } from './stage.js'
 import { analyseBoard, createCommandRunner, readGitHubTickets, readLocalTickets, resolveGitHubRepo } from './tickets.js'
-import { readSkillInventory, reconcileSkills } from './skills.js'
+import { readSkillInventory, reconcileSkills, describeSkill } from './skills.js'
 import { projectKey } from './state.js'
 import { TRACKER_KINDS, TRACKER_LABELS, resolveTracker } from './tracker.js'
 
@@ -523,6 +523,27 @@ export function buildRoutes({ ctx, store, info, now = () => new Date(), run = cr
     return counts
   }
 
+  /**
+   * Whether the `skill` tool can load a given skill, read from its own frontmatter.
+   *
+   * The answer is knowable at dispatch time — the packaged inventory already
+   * parses it — and it matters, because 16 of the 27 shipped skills set
+   * `disable-model-invocation`. The prompt used to hedge ("use the tool if it can
+   * load this"), so the agent dutifully tried, got
+   * `skill "implement" is not available for model invocation`, and only then read
+   * the file. One wasted round trip per dispatch, for a fact we already had.
+   *
+   * @returns true, false, or null when it cannot be read.
+   */
+  const skillModelInvocable = (skillsDir, skill) => {
+    if (typeof skill !== 'string' || skill.length === 0) return null
+    try {
+      return describeSkill(skill, fs.readFileSync(path.join(skillsDir, skill, 'SKILL.md'), 'utf8')).modelInvocable === true
+    } catch (error) {
+      return null
+    }
+  }
+
   const tickets = {
     kind: 'exact',
     path: `${ROUTE_BASE}/tickets`,
@@ -695,6 +716,9 @@ export function buildRoutes({ ctx, store, info, now = () => new Date(), run = cr
           ticket,
           triageLabels: readTriageLabels(resolved),
           handoffPath,
+          // The agent should not have to discover that the tool cannot load this
+          // skill; we can read the answer off its own frontmatter right here.
+          modelInvocable: skillModelInvocable(info.skillsDir, entry.skill),
           // The prompt follows the interface unless the user pinned a language —
           // and the client reports its locale as `lang`.
           lang: resolvePromptLanguage(normalizeSettings(store.settings()).promptLanguage, queryParam(req, 'lang')),
@@ -849,6 +873,7 @@ export function buildRoutes({ ctx, store, info, now = () => new Date(), run = cr
         }
         if (Number.isInteger(body.wayfinderThreshold)) accepted.wayfinderThreshold = body.wayfinderThreshold
         if (typeof body.promptLanguage === 'string') accepted.promptLanguage = body.promptLanguage
+        if (typeof body.dispatchPreset === 'string') accepted.dispatchPreset = body.dispatchPreset
 
         // Normalise the merged result, so a rejected value falls back to its
         // default here rather than being stored and then misreported by the UI.

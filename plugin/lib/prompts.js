@@ -40,7 +40,10 @@ export const DEFAULT_TRIAGE_LABELS = [
 const TEXT = {
   zh: {
     skillIntro: (path) => `请先读取并严格遵循这个文件里的流程：${path}`,
-    skillFallback: (skill) => `（如果 \`skill\` 工具能加载 "${skill}"，优先用它。这些技能里有一部分设置了 disable-model-invocation，工具读不到；那就直接读上面那个文件，效果一样。）`,
+    skillTool: (name) => `这个技能可以被 \`skill\` 工具加载：用 \`skill("${name}")\` 最省事，也可以直接读上面那个文件。`,
+    skillNoTool: (name) => `注意：这个技能设置了 \`disable-model-invocation\`，**\`skill\` 工具加载不了 "${name}"** —— 不要浪费一次调用去试，直接读上面那个文件即可，效果完全一样。`,
+    skillUnknown: (name) => `（如果 \`skill\` 工具能加载 "${name}"，优先用它；加载不了就直接读上面那个文件。）`,
+    blocked: '如果环境让你无法完成（写不了文件、沙箱拒绝了操作、缺少权限、命令跑不起来）：**停下来，把具体错误原样告诉用户**。不要修改系统设置、不要改文件或目录权限、不要绕过限制、不要换一条路去达到同一个目的。工作区的权限姿态是用户的选择，不是你需要修的缺陷。',
     skillAlternative: (name, path) => `需要时可以参考同一目录下的 \`${name}\`：${path}`,
     noSkill: '这次不需要先加载某个技能 —— 按下面的任务做；需要时再加载交接文档里建议的技能。',
     project: (value) => `项目：${value}`,
@@ -82,7 +85,10 @@ const TEXT = {
   },
   en: {
     skillIntro: (path) => `Read and follow the process in this file exactly: ${path}`,
-    skillFallback: (skill) => `(If the \`skill\` tool can load "${skill}", prefer it. Some of these skills set disable-model-invocation and the tool cannot see them; read the file above instead — same result.)`,
+    skillTool: (name) => `The \`skill\` tool can load this one: \`skill("${name}")\` is the shortest route, or just read the file above.`,
+    skillNoTool: (name) => `Note: this skill sets \`disable-model-invocation\`, so the \`skill\` tool **cannot load "${name}"** — do not spend a call trying. Read the file above; it is exactly the same thing.`,
+    skillUnknown: (name) => `(If the \`skill\` tool can load "${name}", prefer it; if not, read the file above.)`,
+    blocked: 'If the environment stops you — you cannot write a file, the sandbox refuses an operation, a permission is missing, a command will not run — **stop and report the exact error to the user**. Do not change system settings, do not alter file or directory permissions, do not work around the restriction, and do not find another route to the same effect. The workspace permission posture is the user\u2019s decision, not a defect for you to fix.',
     skillAlternative: (name, path) => `When useful, the sibling skill \`${name}\` is here: ${path}`,
     noSkill: 'No skill needs loading first — just do the task below, and load whatever skills the handoff document suggests.',
     project: (value) => `Project: ${value}`,
@@ -202,6 +208,7 @@ export function readTriageLabels(projectPath) {
  * @param options.ticket - the ticket to implement, when the stage is `implement`.
  * @param options.triageLabels - the project's label vocabulary.
  * @param options.lang - `'zh'` or `'en'`; the prompt's language.
+ * @param options.modelInvocable - whether the `skill` tool can load this skill; null when unknown.
  * @returns the prompt plus the coordinates the UI must show before sending.
  */
 export function buildDispatchPrompt({
@@ -214,6 +221,7 @@ export function buildDispatchPrompt({
   triageLabels = DEFAULT_TRIAGE_LABELS,
   handoffPath = null,
   lang = 'zh',
+  modelInvocable = null,
 }) {
   const text = TEXT[lang] ?? TEXT.zh
   const tasks = text.tasks[stage.id] ?? { task: `Execute the ${stage.id} step.`, report: 'The result and anything unresolved.' }
@@ -226,7 +234,15 @@ export function buildDispatchPrompt({
   const lines = []
   if (hasSkill) {
     lines.push(text.skillIntro(skillPath))
-    lines.push(text.skillFallback(stage.skill))
+    // Say what the tool can actually do with this skill. Hedging here cost the
+    // agent a failed `skill` call on every dispatch of the 16 gated skills.
+    lines.push(
+      modelInvocable === true
+        ? text.skillTool(stage.skill)
+        : modelInvocable === false
+          ? text.skillNoTool(stage.skill)
+          : text.skillUnknown(stage.skill),
+    )
     if (alternativePath !== null) {
       lines.push(text.skillAlternative(stage.alternative, alternativePath))
     }
@@ -259,11 +275,17 @@ export function buildDispatchPrompt({
   lines.push(text.task(tasks.task))
   lines.push('')
   lines.push(text.report(tasks.report))
+  // One standing clause, because a blocked agent's instinct is to fix the
+  // environment — and repairing Windows ACLs on the user's workspace is not a
+  // thing an "implement this ticket" dispatch should ever decide to do.
+  lines.push('')
+  lines.push(text.blocked)
 
   return {
     stage: stage.id,
     skill: stage.skill ?? null,
     skillPath,
+    modelInvocable,
     alternative: stage.alternative ?? null,
     alternativePath,
     handoffPath,

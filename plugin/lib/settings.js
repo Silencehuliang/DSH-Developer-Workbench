@@ -25,6 +25,13 @@ export const SETTINGS_DEFAULTS = {
   wayfinderThreshold: 12,
   /** `auto` follows the request's locale; `zh`/`en` pin the dispatch prompts. */
   promptLanguage: 'auto',
+  /**
+   * The agent preset a newly dispatched session is created with; empty means the
+   * host's own default. The workbench never picks a permission posture silently:
+   * a session created in a posture that cannot write the workspace cannot do the
+   * work at all, so this is the user's decision and it is remembered.
+   */
+  dispatchPreset: '',
 }
 
 /** Prompt languages the setting accepts. */
@@ -65,6 +72,7 @@ export function normalizeSettings(raw) {
     out.wayfinderThreshold = input.wayfinderThreshold
   }
   if (PROMPT_LANGUAGES.includes(input.promptLanguage)) out.promptLanguage = input.promptLanguage
+  if (typeof input.dispatchPreset === 'string') out.dispatchPreset = input.dispatchPreset
 
   return out
 }

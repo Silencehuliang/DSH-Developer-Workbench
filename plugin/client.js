@@ -52,7 +52,7 @@ window.__ModuleLoader__.load({
      * `npm run ui` clicks the button that would throw — static and runtime checks
      * for the same class of mistake.
      */
-    const inject = ['slots', 'locale', 'uiWorkspace', 'remote', 'remote.session']
+    const inject = ['slots', 'locale', 'uiWorkspace', 'remote', 'remote.session', 'remote.agentPresets']
 
     const zh = {
       panel: '开发工作台',
@@ -165,6 +165,9 @@ window.__ModuleLoader__.load({
       settingsSkillsNote: '这里没有「技能安装位置」这个设置：技能由插件包直接供给，不写进你的项目 —— 旋钮如果控制不了任何东西，就不该出现在设置里。技能是否真的被 DSH 看到，看右栏的技能自检。',
       settingsFailed: '保存失败',
       settingsSaved: '已保存',
+      dispatchPreset: '权限姿态',
+      dispatchPresetHostDefault: '宿主默认',
+      dispatchPresetUnknown: '读不到预设列表',
       dispatchHandoff: '交接文档',
       dispatchHandoffNew: '这次派发会把它写到上面这个路径 —— 系统临时目录，不是工作区。',
       dispatchHandoffResume: '将读取这份已有文档，按它列出的 suggested skills 继续。',
@@ -322,6 +325,9 @@ window.__ModuleLoader__.load({
       settingsSkillsNote: 'There is no "skills install location" here: the skills are served straight from the plugin package and never written into your project, so such a knob would control nothing. Whether DSH actually sees them is what the skill self-check reports.',
       settingsFailed: 'Could not save',
       settingsSaved: 'Saved',
+      dispatchPreset: 'Posture',
+      dispatchPresetHostDefault: 'Host default',
+      dispatchPresetUnknown: 'the preset list is unreadable',
       dispatchHandoff: 'Handoff document',
       dispatchHandoffNew: 'This dispatch will write it to the path above — the OS temp directory, not the workspace.',
       dispatchHandoffResume: 'It will read this existing document and continue from the skills it suggests.',
@@ -582,6 +588,7 @@ window.__ModuleLoader__.load({
       sessionHover: true,
       wayfinderThreshold: 12,
       promptLanguage: 'auto',
+      dispatchPreset: '',
     }
 
     /**
@@ -679,14 +686,14 @@ window.__ModuleLoader__.load({
      * a target.
      *
      * @param operations - the injected side effects.
-     * @param request - `{ text, choice, project }`.
+     * @param request - `{ text, choice, project, agentPreset }`.
      * @returns the session id the prompt went to.
      */
-    async function performDispatch(operations, { text, choice, project }) {
+    async function performDispatch(operations, { text, choice, project, agentPreset = '' }) {
       let sessionId = choice
       if (choice === 'new') {
         if (typeof operations?.createSession !== 'function') throw new Error('session creation is unavailable')
-        sessionId = await operations.createSession(project ?? {})
+        sessionId = await operations.createSession(project ?? {}, agentPreset)
       }
       if (typeof sessionId !== 'string' || sessionId.length === 0) throw new Error('no target session was chosen')
       if (typeof operations?.sendPrompt !== 'function') throw new Error('sending a prompt is unavailable')
@@ -1694,7 +1701,7 @@ window.__ModuleLoader__.load({
      * network or a reconciler.
      */
     function DispatchDialog(props) {
-      const { prompt, draft, choice, sessions, busy, error, notice, t, onDraft, onChoice, onSend, onCopy, onClose } = props
+      const { prompt, draft, choice, sessions, presets, preset, presetsError, busy, error, notice, t, onDraft, onChoice, onPreset, onSend, onCopy, onClose } = props
       if (prompt === null || prompt === undefined) return null
 
       const targets = prompt.targets ?? {}
@@ -1779,6 +1786,38 @@ window.__ModuleLoader__.load({
             ),
           )
         }
+      }
+
+      // The permission posture, shown only when a new session will be created —
+      // reusing a session cannot change it. A dispatch that lands in a posture
+      // which cannot write the workspace is a dispatch that cannot work, and the
+      // user is the one who gets to decide that.
+      const presetList = Array.isArray(presets) ? presets : []
+      if (choice === 'new') {
+        sessionControls.push(
+          h(
+            'span',
+            { key: 'preset', style: { display: 'flex', alignItems: 'center', gap: 6, marginLeft: 'auto' } },
+            h('span', { style: { ...S.muted, fontSize: 10.5 } }, t('dispatchPreset')),
+            presetList.length === 0
+              ? h('span', { key: 'none', className: 'dw-preset-unknown', title: presetsError ?? undefined, style: { ...S.muted, fontSize: 10.5 } }, t('dispatchPresetUnknown'))
+              : h(
+                  'select',
+                  {
+                    className: 'dw-preset',
+                    value: preset ?? '',
+                    disabled: busy === true,
+                    onChange: (event) => onPreset?.(event.target.value),
+                  },
+                  [
+                    h('option', { key: '', value: '' }, t('dispatchPresetHostDefault')),
+                    ...presetList.map((entry) =>
+                      h('option', { key: entry.id, value: entry.id }, `${entry.name}${entry.isDefault === true ? ' ★' : ''}${entry.broken !== null ? ' ⚠' : ''}`),
+                    ),
+                  ],
+                ),
+          ),
+        )
       }
       rows.push(
         h(
@@ -2144,11 +2183,43 @@ window.__ModuleLoader__.load({
       const [dispatchNotice, setDispatchNotice] = useState(null)
       const [focus, setFocus] = useState(null)
       const [settings, setSettings] = useState(currentSettings())
+      const [presets, setPresets] = useState([])
+      const [presetsError, setPresetsError] = useState(null)
+      const [preset, setPreset] = useState(() => currentSettings()?.dispatchPreset ?? '')
 
       useEffect(() => {
         loadSettings()
         return subscribeSettings(setSettings)
       }, [])
+
+      // The permission postures a new session could be created with, so the user
+      // can see and choose one instead of inheriting a silent default.
+      useEffect(() => {
+        let cancelled = false
+        if (typeof props?.listPresets !== 'function') return undefined
+        props.listPresets()
+          .then((next) => {
+            if (cancelled) return
+            setPresets(Array.isArray(next?.presets) ? next.presets : [])
+            setPresetsError(next?.error ?? null)
+          })
+          .catch((nextError) => {
+            if (cancelled) return
+            setPresets([])
+            setPresetsError(String(nextError?.message ?? nextError))
+          })
+        return () => {
+          cancelled = true
+        }
+      }, [props])
+
+      /** Remember the posture: it is the user's decision, and re-deciding on every dispatch would be noise. */
+      const choosePreset = useCallback((next) => {
+        setPreset(next)
+        if (typeof props?.saveSettings === 'function') {
+          props.saveSettings({ dispatchPreset: next }).catch(() => {})
+        }
+      }, [props])
 
       // A session-side action lands the user here; the banner says why.
       useEffect(() => subscribeFocus(setFocus), [])
@@ -2385,6 +2456,7 @@ window.__ModuleLoader__.load({
             text,
             choice,
             project: dispatchRequest.targets?.project ?? {},
+            agentPreset: preset,
           })
           // Record the handoff when it is dispatched, not when it shows up on disk:
           // the workbench chose the path, so it already knows it — and a record
@@ -2541,12 +2613,16 @@ window.__ModuleLoader__.load({
                 draft: dispatchDraft,
                 choice: dispatchChoice,
                 sessions: dispatchSessions,
+                presets,
+                preset,
+                presetsError,
                 busy: dispatchBusy,
                 error: dispatchError,
                 notice: dispatchNotice,
                 t,
                 onDraft: setDispatchDraft,
                 onChoice: setDispatchChoice,
+                onPreset: choosePreset,
                 onSend: sendDispatch,
                 onCopy: copyDispatch,
                 onClose: closeDispatch,
@@ -2645,17 +2721,55 @@ window.__ModuleLoader__.load({
               pickDirectory: () => workspaceNavigation?.pickDirectory(),
               bindProject: (projectPath) => postJson(`${ROUTE_BASE}/projects/bind`, { path: projectPath }),
               setProjectTracker: (projectPath, kind) => postJson(`${ROUTE_BASE}/projects/tracker`, { path: projectPath, kind }),
+              saveSettings: (patch) => postJson(`${ROUTE_BASE}/settings`, patch).then((body) => body?.settings ?? null),
               unbindProject: (projectPath) => postJson(`${ROUTE_BASE}/projects/unbind`, { path: projectPath }),
               setStageOverride: (projectPath, stageId) => postJson(`${ROUTE_BASE}/projects/stage`, { path: projectPath, stage: stageId }),
               recordHandoff: (projectPath, handoffPath, sessionId) =>
                 postJson(`${ROUTE_BASE}/projects/handoff`, { path: projectPath, handoffPath, sessionId }),
               // Dispatch is the one place the workbench writes into a session, so
               // every step is explicit and every failure is surfaced.
-              createSession: async (project) => {
-                const request = project?.workspaceId ? { workspaceId: project.workspaceId } : { cwd: project?.path }
+              //
+              // `agentPreset` is the session's permission posture. The workbench
+              // used to omit it, which meant a dispatched session silently got a
+              // posture the user never chose — on this machine a sandboxed one
+              // whose ACL grant fails outright, leaving the agent unable to write
+              // and inclined to "repair" the filesystem. It is the user's
+              // decision, so it is shown beside the workspace and the ticket.
+              createSession: async (project, agentPreset) => {
+                const base = project?.workspaceId ? { workspaceId: project.workspaceId } : { cwd: project?.path }
+                const request = typeof agentPreset === 'string' && agentPreset.length > 0
+                  ? { ...base, agentPreset }
+                  : base
                 const result = await ctx.remote.session.create(request)
                 if (result?.ok !== true) throw new Error(describeRemoteFailure(result, 'could not create a session'))
                 return result.value.sessionId
+              },
+              listPresets: async () => {
+                // `agentPresets/list` declares no parameters and **throws** when
+                // handed one ("expected 0 argument(s), got 1"), so the correct
+                // shape is tried first; the second attempt is only a safety net for
+                // a build whose generated signature differs.
+                let failure = null
+                for (const args of [[], [{}]]) {
+                  try {
+                    const result = await ctx.remote.agentPresets.list(...args)
+                    if (result?.ok === true) {
+                      return {
+                        presets: (result.value?.presets ?? []).map((preset) => ({
+                          id: preset.id,
+                          name: preset.name ?? preset.id,
+                          isDefault: preset.isDefault === true,
+                          broken: preset.broken ?? null,
+                        })),
+                        error: null,
+                      }
+                    }
+                    failure = describeRemoteFailure(result, 'could not read the agent presets')
+                  } catch (nextError) {
+                    failure = String(nextError?.message ?? nextError)
+                  }
+                }
+                return { presets: [], error: failure }
               },
               sendPrompt: async (sessionId, text) => {
                 const result = await ctx.remote.session.prompt({

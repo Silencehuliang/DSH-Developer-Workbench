@@ -202,7 +202,7 @@ check('client half declares the remote service that dispatch needs', client.plug
 // how the send path failed a second time. A service path cannot be told from a
 // method chain statically, so this list is curated from the host's own client
 // plugins; `npm run ui` clicking the send button is the runtime backstop.
-const NAMESPACED_SERVICES = ['remote.session', 'remote.workspace', 'remote.commands', 'remote.subagents', 'remote.settings']
+const NAMESPACED_SERVICES = ['remote.session', 'remote.workspace', 'remote.commands', 'remote.subagents', 'remote.settings', 'remote.agentPresets']
 const usedNamespacedServices = NAMESPACED_SERVICES.filter((name) => client.source.includes(`ctx.${name}`))
 const undeclaredNamespaced = usedNamespacedServices.filter((name) => !client.plugin.inject.includes(name))
 check('the namespaced-service scan is not vacuous', usedNamespacedServices.length > 0, JSON.stringify(usedNamespacedServices))
@@ -517,6 +517,28 @@ check('dispatch: the dialog shows the target project and its path', dialogText.i
 check('dispatch: the dialog shows the target ticket', dialogText.includes('#7') && dialogText.includes('Dispatch'))
 check('dispatch: the prompt is editable and holds the current draft', findNodes(dialog, 'textarea')[0]?.props?.value === 'edited draft')
 check('dispatch: a new session is offered', dialogText.includes('新建会话'))
+
+// The posture: a dispatched session's permission is the user's decision, and
+// omitting it silently is how one ended up unable to write the workspace at all.
+const presetFixture = {
+  ...dispatchProps,
+  presets: [
+    { id: 'full-access', name: '完全访问', isDefault: true, broken: null },
+    { id: 'standard', name: '标准模式', isDefault: false, broken: null },
+  ],
+  preset: '',
+}
+const presetDialog = renderText(seam.DispatchDialog(presetFixture)).join(' | ')
+check('dispatch: the dialog shows which posture the new session will get', presetDialog.includes('权限姿态'), presetDialog.slice(0, 200))
+check('dispatch: the posture picker lists every preset and marks the default', presetDialog.includes('完全访问 ★') && presetDialog.includes('标准模式'))
+check('dispatch: the first option is the host default, never a silent pick', presetDialog.includes('宿主默认'))
+const presetSelects = findNodes(seam.DispatchDialog(presetFixture), 'select').filter((node) => node.props?.className === 'dw-preset')
+check('dispatch: the posture control is a real select', presetSelects.length === 1, String(presetSelects.length))
+check('dispatch: the picked posture is the selected option', presetSelects[0]?.props?.value === '')
+const reuseDialog = renderText(seam.DispatchDialog({ ...presetFixture, choice: 'session-abc' })).join(' | ')
+check('dispatch: reusing a session hides the posture, because it cannot change it', reuseDialog.includes('权限姿态') === false)
+const unreadablePresets = renderText(seam.DispatchDialog({ ...presetFixture, presets: [] })).join(' | ')
+check('dispatch: an unreadable preset list says so instead of showing an empty control', unreadablePresets.includes('读不到预设列表'))
 check('dispatch: the project\u2019s existing sessions are offered', dialogText.includes('eeeeeeee'), dialogText)
 check('dispatch: the three actions are present', dialogText.includes('新建会话并发送') && dialogText.includes('复制提示词') && dialogText.includes('取消'))
 check('dispatch: nothing renders without a prompt', seam.DispatchDialog({ prompt: null, t: zhT }) === null)
@@ -541,8 +563,8 @@ check('pipeline: no dispatch button when the container offers none', renderText(
 const dispatchCalls = []
 const sentSession = await seam.performDispatch(
   {
-    createSession: async (project) => {
-      dispatchCalls.push(`create:${project.workspaceId ?? project.path}`)
+    createSession: async (project, agentPreset) => {
+      dispatchCalls.push(`create:${project.workspaceId ?? project.path}:${agentPreset ?? ''}`)
       return 'session-new'
     },
     sendPrompt: async (sessionId, text) => {
@@ -552,9 +574,24 @@ const sentSession = await seam.performDispatch(
       dispatchCalls.push(`open:${sessionId}`)
     },
   },
-  { text: 'hello', choice: 'new', project: { workspaceId: 'ws-1', path: '/tmp/demo' } },
+  { text: 'hello', choice: 'new', project: { workspaceId: 'ws-1', path: '/tmp/demo' }, agentPreset: 'full-access' },
 )
-check('dispatch run: a new session is created, sent to, then opened, in that order', sentSession === 'session-new' && dispatchCalls.join(' | ') === 'create:ws-1 | send:session-new:hello | open:session-new', dispatchCalls.join(' | '))
+check('dispatch run: a new session is created, sent to, then opened, in that order', sentSession === 'session-new' && dispatchCalls.join(' | ') === 'create:ws-1:full-access | send:session-new:hello | open:session-new', dispatchCalls.join(' | '))
+
+// The posture is a user decision that the workbench used to omit entirely — which
+// is how a dispatched session ended up in a sandbox it could not even provision.
+const noPresetCalls = []
+await seam.performDispatch(
+  { createSession: async (project, agentPreset) => { noPresetCalls.push(String(agentPreset)); return 'session-x' }, sendPrompt: async () => {}, openSession: () => {} },
+  { text: 't', choice: 'new', project: { workspaceId: 'ws-1' } },
+)
+check('dispatch run: an unchosen posture is passed as empty, never invented', noPresetCalls[0] === '', JSON.stringify(noPresetCalls))
+const reusePresetCalls = []
+await seam.performDispatch(
+  { createSession: async () => { reusePresetCalls.push('created'); return 'nope' }, sendPrompt: async () => {}, openSession: () => {} },
+  { text: 't', choice: 'session-existing', project: { workspaceId: 'ws-1' }, agentPreset: 'full-access' },
+)
+check('dispatch run: reusing a session never creates one, so no posture is applied', reusePresetCalls.length === 0)
 
 const reuseCalls = []
 await seam.performDispatch(
@@ -1083,9 +1120,28 @@ const ticketsPrompt = buildDispatchPrompt({
 check('prompt: the skill absolute path is always present', ticketsPrompt.text.includes(asPosix(ticketsPrompt.skillPath)), ticketsPrompt.skillPath)
 check('prompt: the skill path points at a file that exists', fs.existsSync(ticketsPrompt.skillPath), ticketsPrompt.skillPath)
 check('prompt: the skill name is quoted so the tool shortcut can be offered', ticketsPrompt.text.includes('"to-tickets"'))
-// 16 of 27 skills set this, and every workflow-gating skill is among them, so the
-// fallback sentence is what makes the prompt work at all.
-check('prompt: the disable-model-invocation fallback is explained', ticketsPrompt.text.includes('disable-model-invocation'))
+// 16 of 27 skills set this, and every workflow-gating skill is among them. The
+// prompt must now say plainly what the tool can do with THIS skill: hedging cost
+// the agent a failed `skill` call on every dispatch of a gated skill.
+const promptArgs = {
+  skillsDir: BUNDLED_SKILLS,
+  tracker: { kind: 'github', label: 'GitHub Issues', source: 'project-declaration' },
+  repository: { owner: 'o', repo: 'r' },
+  project: { title: 'Demo', path: '/tmp/demo' },
+  triageLabels: DEFAULT_TRIAGE_LABELS,
+}
+const gatedPrompt = buildDispatchPrompt({ ...promptArgs, stage: stageEntry.get('implement'), modelInvocable: false })
+check('prompt: a gated skill is named as unloadable, with no hedge', gatedPrompt.text.includes('disable-model-invocation') && gatedPrompt.text.includes('加载不了'), gatedPrompt.text.slice(0, 300))
+check('prompt: a gated skill tells the agent not to spend a call trying', gatedPrompt.text.includes('不要浪费一次调用') && gatedPrompt.text.includes('优先用它') === false)
+const loadablePrompt = buildDispatchPrompt({ ...promptArgs, stage: stageEntry.get('tickets'), modelInvocable: true })
+check('prompt: a loadable skill is offered through the tool', loadablePrompt.text.includes('skill(') && loadablePrompt.text.includes('最省事'), loadablePrompt.text.slice(0, 240))
+const unknownLoadability = buildDispatchPrompt({ ...promptArgs, stage: stageEntry.get('tickets'), modelInvocable: null })
+check('prompt: an unknown answer still hedges rather than guessing', unknownLoadability.text.includes('如果') && unknownLoadability.text.includes('优先用它'))
+check('prompt: the loadability answer travels back to the caller', gatedPrompt.modelInvocable === false && loadablePrompt.modelInvocable === true)
+// A blocked agent's instinct is to fix the environment; repairing Windows ACLs on
+// the user's workspace is not something an "implement this ticket" dispatch may decide.
+check('prompt: a blocked agent is told to stop, not to repair the environment', gatedPrompt.text.includes('不要改文件或目录权限') && gatedPrompt.text.includes('停下来'))
+check('prompt: every dispatchable step carries the blocked clause', PROMPT_STAGES.every((id) => buildDispatchPrompt({ ...promptArgs, stage: findDispatchable(id) }).text.includes('不是你需要修的缺陷')))
 check('prompt: the tracker is named with its repository', ticketsPrompt.text.includes('GitHub Issues') && ticketsPrompt.text.includes('o/r'))
 check('prompt: the triage vocabulary is listed', DEFAULT_TRIAGE_LABELS.every((label) => ticketsPrompt.text.includes(label)))
 check('prompt: the project title and working directory are given', ticketsPrompt.text.includes('Demo') && ticketsPrompt.text.includes('/tmp/demo'))
@@ -1229,7 +1285,7 @@ check('dispatch ids: handoff and resume are dispatchable without being pipeline 
 
 console.log('\nsettings and prompt language (hermetic)')
 
-check('settings: defaults are complete', Object.keys(SETTINGS_DEFAULTS).length === 5 && SETTINGS_DEFAULTS.promptLanguage === 'auto' && SETTINGS_DEFAULTS.wayfinderThreshold === 12)
+check('settings: defaults are complete', Object.keys(SETTINGS_DEFAULTS).length === 6 && SETTINGS_DEFAULTS.promptLanguage === 'auto' && SETTINGS_DEFAULTS.wayfinderThreshold === 12 && SETTINGS_DEFAULTS.dispatchPreset === '')
 const normalisedDefaults = normalizeSettings(null)
 check('settings: nothing stored means the defaults', JSON.stringify(normalisedDefaults) === JSON.stringify(SETTINGS_DEFAULTS), JSON.stringify(normalisedDefaults))
 check('settings: an unknown field is dropped rather than stored', !('nonsense' in normalizeSettings({ nonsense: 1 })))
