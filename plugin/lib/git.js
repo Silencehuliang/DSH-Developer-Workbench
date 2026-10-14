@@ -6,10 +6,21 @@
  * explanatory result instead of throwing, because the project list must render
  * for a directory that is not a repository.
  *
+ * **These calls are asynchronous on purpose.** An earlier version used
+ * `execFileSync`, which blocks Node's event loop for the whole life of each
+ * child process. Measured on a real profile, one board read held the entire DSH
+ * web server for roughly eighteen seconds, and `/overview` — which needs no
+ * subprocess of its own beyond git — went from 551 ms to 19 272 ms while that
+ * read was in flight. Spawning asynchronously yields the loop while the child
+ * runs, so a slow subprocess costs only the request that asked for it.
+ *
  * @module lib/git
  */
 
-import { execFileSync } from 'node:child_process'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+
+const execFileAsync = promisify(execFile)
 
 /** How long any single git query may take before it is abandoned. */
 const GIT_TIMEOUT_MS = 5000
@@ -21,19 +32,19 @@ const GIT_TIMEOUT_MS = 5000
  * @param args - git arguments, without the leading `git`.
  * @returns `{ code, stdout, stderr }`; `code` is null when the command could not start.
  */
-function defaultRun(cwd, args) {
+async function defaultRun(cwd, args) {
   try {
-    const stdout = execFileSync('git', args, {
+    const { stdout, stderr } = await execFileAsync('git', args, {
       cwd,
       encoding: 'utf8',
       timeout: GIT_TIMEOUT_MS,
       windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      maxBuffer: 8 * 1024 * 1024,
     })
-    return { code: 0, stdout, stderr: '' }
+    return { code: 0, stdout, stderr: stderr ?? '' }
   } catch (error) {
     return {
-      code: typeof error?.status === 'number' ? error.status : null,
+      code: typeof error?.code === 'number' ? error.code : null,
       stdout: typeof error?.stdout === 'string' ? error.stdout : '',
       stderr: typeof error?.stderr === 'string' ? error.stderr : String(error?.message ?? error),
       spawnFailed: error?.code === 'ENOENT',
@@ -48,8 +59,8 @@ function defaultRun(cwd, args) {
  * @param run - command runner; injectable for tests.
  * @returns the overview, always with an `ok` flag and an explanation when not ok.
  */
-export function gitOverview(cwd, run = defaultRun) {
-  const inside = run(cwd, ['rev-parse', '--is-inside-work-tree'])
+export async function gitOverview(cwd, run = defaultRun) {
+  const inside = await run(cwd, ['rev-parse', '--is-inside-work-tree'])
 
   if (inside.spawnFailed === true) {
     return { ok: false, isRepo: false, reason: 'git-unavailable', error: 'the git executable could not be started' }
@@ -59,9 +70,12 @@ export function gitOverview(cwd, run = defaultRun) {
     return { ok: false, isRepo: false, reason: 'not-a-git-work-tree', error: detail.length > 0 ? detail : null }
   }
 
-  const branch = run(cwd, ['rev-parse', '--abbrev-ref', 'HEAD'])
-  const status = run(cwd, ['status', '--porcelain'])
-  const log = run(cwd, ['log', '-1', '--pretty=%h%x09%s'])
+  // Three independent queries, so the request waits once rather than three times.
+  const [branch, status, log] = await Promise.all([
+    run(cwd, ['rev-parse', '--abbrev-ref', 'HEAD']),
+    run(cwd, ['status', '--porcelain']),
+    run(cwd, ['log', '-1', '--pretty=%h%x09%s']),
+  ])
 
   return {
     ok: true,

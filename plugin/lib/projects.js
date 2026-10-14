@@ -54,7 +54,7 @@ export async function describeProject({ workspace, state }) {
      * Capped: this is a projection, not a ledger.
      */
     sessionIds: workspace.sessionIds.slice(0, SESSION_ID_LIMIT),
-    git: gitOverview(workspace.path),
+    git: await gitOverview(workspace.path),
     tracker,
     /** The user's own decisions, kept separate from anything derived. */
     feature: record?.feature ?? null,
@@ -83,7 +83,7 @@ export async function describeProject({ workspace, state }) {
  * @param options.runGit - injectable git reader.
  * @returns the probe result.
  */
-export function probeDirectory({ target, mapping = null, readFile = undefined, runGit = gitOverview }) {
+export async function probeDirectory({ target, mapping = null, readFile = undefined, runGit = gitOverview }) {
   const resolved = path.resolve(target)
 
   let stats = null
@@ -111,7 +111,7 @@ export function probeDirectory({ target, mapping = null, readFile = undefined, r
     declaration: { path: declaration, present: declarationPresent },
     tracker: isDirectory ? resolveTracker({ projectPath: resolved, mapping, readFile }) : null,
     git: isDirectory
-      ? runGit(resolved)
+      ? await runGit(resolved)
       : { ok: false, isRepo: false, reason: 'not-a-directory', reasonDetail: null },
     mapping: mapping === null ? null : mapping,
   }

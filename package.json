@@ -6,6 +6,7 @@
   "scripts": {
     "check": "node plugin/scripts/verify.mjs --client-only",
     "verify": "node plugin/scripts/verify.mjs",
-    "acceptance": "node plugin/scripts/acceptance.mjs"
+    "acceptance": "node plugin/scripts/acceptance.mjs",
+    "ui": "node plugin/scripts/ui-probe.mjs"
   }
 }

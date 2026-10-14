@@ -160,10 +160,11 @@ export function buildRoutes({ ctx, store, info, now = () => new Date(), run = cr
     handler: async (req, res) => {
       try {
         const workspaces = registry()?.list() ?? []
-        const projects = []
-        for (const workspace of workspaces) {
-          projects.push(await describeProject({ workspace, state: store }))
-        }
+        // Projects are independent reads, so one round of waiting rather than one
+        // per workspace. Serially each git query added its own latency.
+        const projects = await Promise.all(
+          workspaces.map((workspace) => describeProject({ workspace, state: store })),
+        )
         sendJson(res, 200, {
           generatedAt: now().toISOString(),
           stateFile: store.file,
@@ -179,7 +180,7 @@ export function buildRoutes({ ctx, store, info, now = () => new Date(), run = cr
   const probe = {
     kind: 'exact',
     path: `${ROUTE_BASE}/probe`,
-    handler: (req, res) => {
+    handler: async (req, res) => {
       try {
         const target = queryParam(req, 'path')
         if (target === null) {
@@ -188,7 +189,7 @@ export function buildRoutes({ ctx, store, info, now = () => new Date(), run = cr
         }
         const resolved = path.resolve(target)
         const mapping = store.get(projectKey(resolved))?.tracker ?? null
-        sendJson(res, 200, probeDirectory({ target: resolved, mapping }))
+        sendJson(res, 200, await probeDirectory({ target: resolved, mapping }))
       } catch (error) {
         fail(res, 500, error)
       }
@@ -389,7 +390,7 @@ export function buildRoutes({ ctx, store, info, now = () => new Date(), run = cr
    * could disagree about what the frontier is would be worse than one that is
    * occasionally wrong, because the disagreement is invisible.
    */
-  const boardFor = (resolved, tracker) => {
+  const boardFor = async (resolved, tracker) => {
     if (tracker === null) {
       return { state: 'needs-tracker', tickets: [], frontier: [], problems: [], notes: [] }
     }
@@ -398,7 +399,7 @@ export function buildRoutes({ ctx, store, info, now = () => new Date(), run = cr
       return { state: 'ready', ...analyseBoard(read.tickets), notes: read.notes }
     }
     if (tracker.kind === 'github') {
-      const repository = resolveGitHubRepo(resolved, run)
+      const repository = await resolveGitHubRepo(resolved, run)
       if (repository === null) {
         return {
           state: 'unavailable',
@@ -409,7 +410,7 @@ export function buildRoutes({ ctx, store, info, now = () => new Date(), run = cr
           notes: [],
         }
       }
-      const read = readGitHubTickets({ run, owner: repository.owner, repo: repository.repo })
+      const read = await readGitHubTickets({ run, owner: repository.owner, repo: repository.repo })
       if (read.ok !== true) {
         return {
           state: 'unavailable',
@@ -435,6 +436,39 @@ export function buildRoutes({ ctx, store, info, now = () => new Date(), run = cr
     }
   }
 
+  /**
+   * One board read per GitHub project per short window, shared by concurrent callers.
+   *
+   * **Only the GitHub read is cached.** That read pays for a dozen `gh`
+   * subprocesses, and opening a project asks for the board twice (the board route
+   * and the stage route), so single-flight halves the cost and the TTL keeps a
+   * refresh from paying it again. The local-markdown read is a directory listing
+   * costing about a millisecond — caching that only buys staleness: it served an
+   * empty board for seconds after tickets appeared on disk, which is both wrong
+   * for the user and fatal for a test that writes a ticket and reads it back.
+   *
+   * A failed read is evicted rather than cached, so a transient failure cannot stick.
+   */
+  const boardCache = new Map()
+  const BOARD_TTL_MS = 10000
+  const boardForCached = (resolved, tracker) => {
+    if (tracker?.kind !== 'github') return boardFor(resolved, tracker)
+    const key = `${tracker.kind}:${resolved}`
+    const cached = boardCache.get(key)
+    if (cached !== undefined && Date.now() - cached.at < BOARD_TTL_MS) return cached.promise
+    const promise = boardFor(resolved, tracker)
+    boardCache.set(key, { at: Date.now(), promise })
+    promise.catch(() => boardCache.delete(key))
+    return promise
+  }
+
+  /** Drop a cached board, so the next read sees what just changed. */
+  const invalidateBoard = (resolved) => {
+    for (const key of [...boardCache.keys()]) {
+      if (key.endsWith(`:${resolved}`)) boardCache.delete(key)
+    }
+  }
+
   /** Count scanned artifacts by kind, which is what the stage derivation reads. */
   const artifactCounts = (scan) => {
     const counts = { spec: 0, plan: 0, adr: 0, glossary: 0, handoff: 0 }
@@ -449,7 +483,7 @@ export function buildRoutes({ ctx, store, info, now = () => new Date(), run = cr
   const tickets = {
     kind: 'exact',
     path: `${ROUTE_BASE}/tickets`,
-    handler: (req, res) => {
+    handler: async (req, res) => {
       try {
         const target = queryParam(req, 'path')
         if (target === null) {
@@ -461,7 +495,7 @@ export function buildRoutes({ ctx, store, info, now = () => new Date(), run = cr
           projectPath: resolved,
           mapping: store.get(projectKey(resolved))?.tracker ?? null,
         })
-        sendJson(res, 200, { tracker, ...boardFor(resolved, tracker) })
+        sendJson(res, 200, { tracker, ...(await boardForCached(resolved, tracker)) })
       } catch (error) {
         fail(res, 500, error)
       }
@@ -471,7 +505,7 @@ export function buildRoutes({ ctx, store, info, now = () => new Date(), run = cr
   const stage = {
     kind: 'exact',
     path: `${ROUTE_BASE}/stage`,
-    handler: (req, res) => {
+    handler: async (req, res) => {
       try {
         const target = queryParam(req, 'path')
         if (target === null) {
@@ -484,7 +518,7 @@ export function buildRoutes({ ctx, store, info, now = () => new Date(), run = cr
         const tracker = resolveTracker({ projectPath: resolved, mapping: record?.tracker ?? null })
         const scan = scanArtifacts(resolved, { handoffs: record?.handoffs ?? [] })
         const counts = artifactCounts(scan)
-        const board = boardFor(resolved, tracker)
+        const board = await boardForCached(resolved, tracker)
 
         const derivation = deriveStage({
           tracker,
@@ -562,7 +596,7 @@ export function buildRoutes({ ctx, store, info, now = () => new Date(), run = cr
   const prompt = {
     kind: 'exact',
     path: `${ROUTE_BASE}/prompt`,
-    handler: (req, res) => {
+    handler: async (req, res) => {
       try {
         const target = queryParam(req, 'path')
         const stageId = queryParam(req, 'stage')
@@ -579,7 +613,7 @@ export function buildRoutes({ ctx, store, info, now = () => new Date(), run = cr
         const resolved = path.resolve(target)
         const record = store.get(projectKey(resolved)) ?? null
         const tracker = resolveTracker({ projectPath: resolved, mapping: record?.tracker ?? null })
-        const board = boardFor(resolved, tracker)
+        const board = await boardForCached(resolved, tracker)
 
         // The implement step needs a subject. Default to the first startable
         // ticket, which is the same answer the board gives.

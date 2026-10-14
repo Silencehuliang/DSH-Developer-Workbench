@@ -219,6 +219,7 @@ function renderText(node) {
 }
 
 const zhT = (key, params) => seam.translate(seam.dicts.zh, key, params)
+const enT = (key, params) => seam.translate(seam.dicts.en, key, params)
 
 const fixtureProjects = [
   {
@@ -388,13 +389,20 @@ const stageFixture = {
   overridden: false,
   completed: ['setup', 'grill', 'spec', 'tickets'],
   stages: stageSteps,
-  evidence: [{ stage: 'implement', code: 'tickets-open', note: '8 of 11 ticket(s) are still open, 2 startable' }],
+  evidence: [{ stage: 'implement', code: 'tickets-open', note: '8 of 11 ticket(s) are still open, 2 startable', data: { openTickets: 8, ticketTotal: 11, frontierCount: 2 } }],
   bypass: [],
 }
 const pipelineText = renderText(seam.StagePipeline({ stage: stageFixture, t: zhT, onOverride: () => {} })).join(' | ')
 check('pipeline: every step is labelled', ['配置 tracker', '拷问', '成稿', '拆工单', '实现', '评审', '提 PR', '复盘'].every((label) => pipelineText.includes(label)), pipelineText.slice(0, 140))
 check('pipeline: the current step offers its skill and its alternative', pipelineText.includes('implement / tdd'), pipelineText)
-check('pipeline: the evidence for the step is shown', pipelineText.includes('依据') && pipelineText.includes('8 of 11'))
+// The host writes its evidence in English; the interface must not show it raw.
+const englishPipeline = renderText(seam.StagePipeline({ stage: stageFixture, t: enT, onOverride: () => {} })).join(' | ')
+const zhEvidence = renderText(seam.StagePipeline({ stage: stageFixture, t: zhT, onOverride: () => {} })).join(' | ')
+check('pipeline: the evidence for the step is shown', zhEvidence.includes('依据'))
+check('pipeline: evidence is rebuilt in the interface language, not echoed in English', zhEvidence.includes('张工单里还有') && zhEvidence.includes('可以开工'), zhEvidence.slice(0, 200))
+check('pipeline: the same evidence renders in English when the interface is English', englishPipeline.includes('ticket(s) are still open') && englishPipeline.includes('startable'), englishPipeline.slice(0, 200))
+check('pipeline: the numbers survive the translation', zhEvidence.includes('11 张工单') && zhEvidence.includes('8 张没做完') && zhEvidence.includes('2 张可以开工'), zhEvidence.slice(0, 200))
+check('pipeline: an evidence code with no wording falls back to the host sentence rather than braces', renderText(seam.StagePipeline({ stage: { ...stageFixture, evidence: [{ code: 'brand-new-code', note: 'the host explains this one' }] }, t: zhT, onOverride: () => {} })).join(' ').includes('the host explains this one'))
 check('pipeline: the pin control lists every stage', pipelineText.includes('手动覆盖') && pipelineText.includes('配置 tracker'))
 check('pipeline: the unpin control is absent while nothing is pinned', pipelineText.includes('恢复自动推导') === false)
 
@@ -406,9 +414,9 @@ check('pipeline: a pin still shows what the derivation said', overriddenPipeline
 check('pipeline: the unpin control appears once pinned', overriddenPipeline.includes('恢复自动推导'))
 
 const bypassPipeline = renderText(
-  seam.StagePipeline({ stage: { ...stageFixture, bypass: [{ skill: 'wayfinder', code: 'too-many-open-tickets', note: '30 open tickets is at or above the 12-ticket threshold' }] }, t: zhT, onOverride: () => {} }),
+  seam.StagePipeline({ stage: { ...stageFixture, bypass: [{ skill: 'wayfinder', code: 'too-many-open-tickets', note: '30 open tickets is at or above the 12-ticket threshold', data: { openTickets: 30, threshold: 12 } }] }, t: zhT, onOverride: () => {} }),
 ).join(' | ')
-check('pipeline: a bypass suggestion names its skill and its reason', bypassPipeline.includes('旁路建议') && bypassPipeline.includes('wayfinder') && bypassPipeline.includes('12-ticket threshold'))
+check('pipeline: a bypass suggestion names its skill and its reason', bypassPipeline.includes('旁路建议') && bypassPipeline.includes('wayfinder') && bypassPipeline.includes('阈值'))
 
 check('pipeline: loading shows before the first answer', renderText(seam.StagePipeline({ stage: null, t: zhT })).join(' ').includes('正在读取'))
 check('stage labels: a known id is localised', seam.stageLabel('implement', zhT) === '实现', seam.stageLabel('implement', zhT))
@@ -934,7 +942,7 @@ const scripted = makeRunner([
   { when: (command, args) => command === 'gh' && args[0] === 'api' && args[1].endsWith('/issues/6/dependencies/blocked_by'), reply: okReply('3\n') },
   { when: (command, args) => command === 'gh' && args[0] === 'api', reply: okReply('') },
 ])
-const scriptedRead = readGitHubTickets({ run: scripted.run, owner: 'o', repo: 'r' })
+const scriptedRead = await readGitHubTickets({ run: scripted.run, owner: 'o', repo: 'r' })
 check('github read: every issue becomes a ticket', scriptedRead.ok === true && scriptedRead.tickets.length === 3, JSON.stringify(scriptedRead).slice(0, 120))
 const blockedTicket = scriptedRead.tickets.find((ticket) => ticket.id === '6')
 check('github read: blockers come from native edges, not the body', blockedTicket.blockedBy.join(',') === '3' && blockedTicket.blockedBySource === 'native-edge', JSON.stringify({ blockedBy: blockedTicket.blockedBy, source: blockedTicket.blockedBySource }))
@@ -972,13 +980,13 @@ const failureCases = [
   { label: 'gh answers with something else', reply: { ok: false, code: 1, stdout: '', stderr: 'weird failure', spawnFailed: false }, expected: 'gh-failed' },
 ]
 for (const failure of failureCases) {
-  const result = readGitHubTickets({ run: makeRunner([{ when: () => true, reply: failure.reply }]).run, owner: 'o', repo: 'r' })
+  const result = await readGitHubTickets({ run: makeRunner([{ when: () => true, reply: failure.reply }]).run, owner: 'o', repo: 'r' })
   check(`github read: "${failure.label}" is named, not swallowed`, result.ok === false && result.code === failure.expected, `${result.code}`)
 }
-const notJson = readGitHubTickets({ run: makeRunner([{ when: () => true, reply: okReply('total nonsense') }]).run, owner: 'o', repo: 'r' })
+const notJson = await readGitHubTickets({ run: makeRunner([{ when: () => true, reply: okReply('total nonsense') }]).run, owner: 'o', repo: 'r' })
 check('github read: non-JSON output is refused', notJson.code === 'gh-bad-json', String(notJson.code))
 
-const edgesBroken = readGitHubTickets({
+const edgesBroken = await readGitHubTickets({
   run: makeRunner([
     { when: (command, args) => args[0] === 'issue', reply: okReply(JSON.stringify([{ number: 1, title: 'a', state: 'OPEN', labels: [], url: '', body: '' }])) },
     { when: (command, args) => args[0] === 'api', reply: { ok: false, code: 1, stdout: '', stderr: 'boom', spawnFailed: false } },

@@ -91,16 +91,20 @@ export function deriveStage(facts = {}) {
   const evidence = []
   let derived
 
+  // Every evidence item carries the numbers behind its sentence in `data`, so a
+  // caller can render the same fact in another language without re-deriving it —
+  // and without parsing the English prose. `note` stays as the fallback for any
+  // code the caller has no wording for.
   if (tracker === null) {
     derived = 'setup'
-    evidence.push({ stage: 'setup', code: 'no-tracker', note: 'no tracker is declared for this project' })
+    evidence.push({ stage: 'setup', code: 'no-tracker', note: 'no tracker is declared for this project', data: {} })
   } else if (!specPresent) {
     if (designDocs === 0) {
       derived = 'grill'
-      evidence.push({ stage: 'grill', code: 'nothing-sharpened', note: 'no spec and no design docs exist yet' })
+      evidence.push({ stage: 'grill', code: 'nothing-sharpened', note: 'no spec and no design docs exist yet', data: {} })
     } else {
       derived = 'spec'
-      evidence.push({ stage: 'spec', code: 'design-docs-only', note: `${designDocs} design doc(s) exist but no spec yet` })
+      evidence.push({ stage: 'spec', code: 'design-docs-only', note: `${designDocs} design doc(s) exist but no spec yet`, data: { designDocs } })
     }
   } else if (ticketTotal === 0) {
     derived = 'tickets'
@@ -110,6 +114,7 @@ export function deriveStage(facts = {}) {
       note: specCount + planCount > 0
         ? 'a spec exists but the tracker holds no tickets'
         : 'the tracker holds no tickets yet',
+      data: { specCount, planCount },
     })
   } else if (openTickets > 0) {
     derived = 'implement'
@@ -117,16 +122,17 @@ export function deriveStage(facts = {}) {
       stage: 'implement',
       code: 'tickets-open',
       note: `${openTickets} of ${ticketTotal} ticket(s) are still open, ${frontierCount} startable`,
+      data: { openTickets, ticketTotal, frontierCount },
     })
   } else if (reviewCount === 0) {
     derived = 'review'
-    evidence.push({ stage: 'review', code: 'no-review', note: `all ${ticketTotal} ticket(s) are done and no review is recorded` })
+    evidence.push({ stage: 'review', code: 'no-review', note: `all ${ticketTotal} ticket(s) are done and no review is recorded`, data: { ticketTotal } })
   } else if (prCount === 0) {
     derived = 'pr'
-    evidence.push({ stage: 'pr', code: 'no-pull-request', note: 'a review is recorded and there is no pull request yet' })
+    evidence.push({ stage: 'pr', code: 'no-pull-request', note: 'a review is recorded and there is no pull request yet', data: {} })
   } else {
     derived = 'retro'
-    evidence.push({ stage: 'retro', code: 'delivered', note: `${prCount} pull request(s) recorded` })
+    evidence.push({ stage: 'retro', code: 'delivered', note: `${prCount} pull request(s) recorded`, data: { prCount } })
   }
 
   const override = typeof facts.override === 'string' && indexOfStage(facts.override) >= 0 ? facts.override : null
@@ -139,6 +145,7 @@ export function deriveStage(facts = {}) {
       skill: 'wayfinder',
       code: 'too-many-open-tickets',
       note: `${openTickets} open tickets is at or above the ${threshold}-ticket threshold for one session`,
+      data: { openTickets, threshold },
     })
   }
   if (planCount > 0 && ticketTotal === 0) {
@@ -146,6 +153,7 @@ export function deriveStage(facts = {}) {
       skill: 'to-tickets',
       code: 'map-without-tickets',
       note: 'a planning map exists but no tickets have been cut from it yet',
+      data: { planCount },
     })
   }
 

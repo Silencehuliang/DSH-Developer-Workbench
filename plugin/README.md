@@ -65,7 +65,26 @@ npm run acceptance   # 一个项目走完整条阶段阶梯，需要 DSH 在跑
 
 它也会**如实报告链路在哪里停下**（见「已知问题」），而不是假装走完了。
 
-**每改必跑**：改完不跑等于没改 —— 结构上由 `.githooks/pre-commit` 兜底（`git config core.hooksPath .githooks`）。
+**`ui-probe.mjs` 用真浏览器验收界面** —— 前两条缝都覆盖不到的一层：
+
+```bash
+npm run ui           # 需要 DSH 在跑，且机器上有 Edge 或 Chrome
+```
+
+它开一个无头 Chromium，点侧边栏入口，等面板渲染，点项目行，然后断言：入口可见、面板真的渲染出来、项目行有真实数据、**恰好一个**项目被选中、点第二个会把选中移过去（且选中的就是点的那行）、阶段流水线出内容、页面上不再有「正在读取」、产物栏与技能自检都出内容、**控制台零错误**，最后截图。
+
+### 为什么探针要自己签一个 cookie
+
+`dsh web` 用**每进程随机生成、从不落盘**的令牌守着首页，所以从进程外面读不到。但磁盘上有那把 32 字节签名密钥，于是探针用它签出宿主本该在令牌交换后签发的那个 cookie（见 `ui-probe.mjs` 的 `mintSessionCookie`）。这是从外部打开界面的**唯一**一条路；探针不做其他认证动作，也不碰 profile。
+
+| 环境变量 | 用途 |
+|---|---|
+| `DSH_WEB_URL` | 界面地址，默认 `http://127.0.0.1:19387` |
+| `DSH_HOME` | DSH 主目录，默认 `~/.dsh`（读签名密钥） |
+| `DSH_BROWSER` | 指定 Chromium；不设则自动找 Edge / Chrome |
+| `DSH_CDP_PORT` | 调试端口，默认 9333 |
+
+**每改必跑**：改完不跑等于没改 —— 结构上由 `.githooks/pre-commit` 兜底（`git config core.hooksPath .githooks`）。**改界面则必须跑 `npm run ui`。**
 
 ## 文档地图
 

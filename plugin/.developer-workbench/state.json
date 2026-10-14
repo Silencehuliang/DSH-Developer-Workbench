@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "settings": {},
+  "projects": {
+    "e:\\development\\agents_project\\dsh_project\\developer workbench": {
+      "path": "E:\\Development\\Agents_Project\\dsh_project\\Developer Workbench",
+      "stage": {
+        "id": "implement",
+        "derivedAt": "2026-10-14T08:28:13.611Z",
+        "overridden": false
+      }
+    },
+    "e:\\development\\project\\workbuddy2api-panel": {
+      "path": "E:\\Development\\Project\\workbuddy2api-panel",
+      "stage": {
+        "id": "setup",
+        "derivedAt": "2026-10-14T08:30:24.721Z",
+        "overridden": false
+      }
+    },
+    "e:\\development\\agents_project\\dsh_project\\workstation": {
+      "path": "E:\\Development\\Agents_Project\\dsh_project\\WorkStation",
+      "stage": {
+        "id": "setup",
+        "derivedAt": "2026-10-14T08:30:24.728Z",
+        "overridden": false
+      }
+    },
+    "e:\\development\\agents_project\\dsh_project\\goal dashboard": {
+      "path": "E:\\Development\\Agents_Project\\dsh_project\\Goal Dashboard",
+      "stage": {
+        "id": "setup",
+        "derivedAt": "2026-10-14T08:30:24.734Z",
+        "overridden": false
+      }
+    }
+  }
+}

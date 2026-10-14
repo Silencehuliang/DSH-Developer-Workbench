@@ -75,6 +75,17 @@ window.__ModuleLoader__.load({
       stagePending: '未开始',
       stageSkill: '技能 {skill}',
       stageEvidenceNote: '依据',
+      evidenceNote_no_tracker: '这个项目还没有声明 tracker',
+      evidenceNote_nothing_sharpened: '既没有 spec，也没有设计文档',
+      evidenceNote_design_docs_only: '已有 {designDocs} 份设计文档，但还没有 spec',
+      evidenceNote_spec_without_tickets: 'spec 已经有了，但 tracker 上还没有工单',
+      evidenceNote_tickets_absent: 'tracker 上还没有工单',
+      evidenceNote_tickets_open: '{ticketTotal} 张工单里还有 {openTickets} 张没做完，其中 {frontierCount} 张可以开工',
+      evidenceNote_no_review: '{ticketTotal} 张工单全部完成，但还没有评审记录',
+      evidenceNote_no_pull_request: '评审已记录，但还没有 PR',
+      evidenceNote_delivered: '已记录 {prCount} 个 PR',
+      bypassNote_too_many_open_tickets: '开放工单达到 {openTickets} 张，越过了单会话 {threshold} 张的阈值',
+      bypassNote_map_without_tickets: '已有规划图，但还没有从它切出工单',
       stageOverridden: '已被手动覆盖',
       stageDerivedWas: '推导结果是 {derived}',
       stageOverride: '手动覆盖',
@@ -221,6 +232,17 @@ window.__ModuleLoader__.load({
       stagePending: 'not started',
       stageSkill: 'skill {skill}',
       stageEvidenceNote: 'because',
+      evidenceNote_no_tracker: 'this project has not declared a tracker',
+      evidenceNote_nothing_sharpened: 'there is no spec and no design document',
+      evidenceNote_design_docs_only: '{designDocs} design document(s) exist, but no spec yet',
+      evidenceNote_spec_without_tickets: 'a spec exists, but the tracker holds no tickets',
+      evidenceNote_tickets_absent: 'the tracker holds no tickets yet',
+      evidenceNote_tickets_open: '{openTickets} of {ticketTotal} ticket(s) are still open, {frontierCount} startable',
+      evidenceNote_no_review: 'all {ticketTotal} ticket(s) are done, but no review is recorded',
+      evidenceNote_no_pull_request: 'a review is recorded, but there is no pull request yet',
+      evidenceNote_delivered: '{prCount} pull request(s) recorded',
+      bypassNote_too_many_open_tickets: '{openTickets} open tickets is past the {threshold}-ticket threshold for one session',
+      bypassNote_map_without_tickets: 'a planning map exists, but no tickets have been cut from it yet',
       stageOverridden: 'manually overridden',
       stageDerivedWas: 'the derivation says {derived}',
       stageOverride: 'Override',
@@ -359,6 +381,31 @@ window.__ModuleLoader__.load({
      */
     function makeTranslate(dict) {
       return (key, params) => translate(dict, key, params)
+    }
+
+    /**
+     * Localize a host evidence or bypass line.
+     *
+     * The host writes its evidence in English, and the interface may not be. The
+     * sentence is rebuilt from the `data` the host sends beside the note, falling
+     * back to the host's own prose for any code this build has no wording for.
+     *
+     * @param item - the evidence or bypass entry.
+     * @param t - the bound translate function.
+     * @param prefix - `evidenceNote` or `bypassNote`.
+     * @returns the sentence to show.
+     */
+    function evidenceNote(item, t, prefix = 'evidenceNote') {
+      const code = String(item?.code ?? '')
+      const fallback = item?.note ?? ''
+      if (code.length === 0) return fallback
+      const key = `${prefix}_${code.replace(/[^A-Za-z0-9]+/g, '_')}`
+      const translated = t(key, item?.data ?? {})
+      // An unknown code returns the key; a known code without its numbers still
+      // shows `{ticketTotal}`. Both fall back to the host's own sentence rather
+      // than putting braces on screen.
+      if (translated === key || /\{[A-Za-z0-9_]+\}/.test(translated)) return fallback
+      return translated
     }
 
     /** Short local timestamp for a list row. */
@@ -641,8 +688,8 @@ window.__ModuleLoader__.load({
         color: 'var(--dsw-alias-label-primary)',
         background: 'var(--dsw-alias-bg-base)',
       },
-      columns: { display: 'grid', gridTemplateColumns: '236px minmax(0, 1fr) 268px', minHeight: '100%' },
-      col: { padding: '22px 18px 40px', borderRight: '1px solid var(--dsw-alias-border-l1)', minWidth: 0 },
+      columns: { display: 'grid', gridTemplateColumns: '268px minmax(0, 1fr) 272px', minHeight: '100%' },
+      col: { padding: '22px 14px 40px', borderRight: '1px solid var(--dsw-alias-border-l1)', minWidth: 0 },
       colLast: { padding: '22px 18px 40px', minWidth: 0 },
       h1: { fontSize: 20, lineHeight: 1.3, margin: '0 0 4px', letterSpacing: '-.2px' },
       lead: { margin: '0 0 18px', fontSize: 12.8, color: 'var(--dsw-alias-label-secondary)' },
@@ -678,8 +725,23 @@ window.__ModuleLoader__.load({
         color: 'inherit',
         cursor: 'pointer',
       },
-      rowHead: { display: 'flex', alignItems: 'baseline', gap: 7 },
-      rowTitle: { fontSize: 13, fontWeight: 600, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+      rowHead: { display: 'flex', alignItems: 'flex-start', gap: 7, justifyContent: 'space-between' },
+      // The title used to be a single clipped line next to two chips in a 199px
+      // card, which cut every project down to "Develo…". It now owns the line and
+      // wraps; the chips moved to the foot.
+      rowTitle: { fontSize: 12.8, fontWeight: 600, lineHeight: 1.35, overflowWrap: 'anywhere', minWidth: 0 },
+      rowFoot: { display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap', marginTop: 5, fontSize: 11, color: 'var(--dsw-alias-label-secondary)' },
+      rowAction: {
+        marginLeft: 'auto',
+        font: 'inherit',
+        fontSize: 10.5,
+        padding: '1px 7px',
+        background: 'transparent',
+        border: '1px solid var(--dsw-alias-border-l2)',
+        borderRadius: 6,
+        color: 'var(--dsw-alias-label-secondary)',
+        cursor: 'pointer',
+      },
       meta: { display: 'flex', gap: 9, flexWrap: 'wrap', marginTop: 5, fontSize: 11, color: 'var(--dsw-alias-label-secondary)' },
       mono: { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' },
       chip: { fontSize: 9.5, padding: '1px 6px', borderRadius: 5, border: '1px solid var(--dsw-alias-border-l2)', whiteSpace: 'nowrap' },
@@ -907,54 +969,50 @@ window.__ModuleLoader__.load({
         meta.push(h('span', { key: 'missing', style: { color: 'var(--dsw-alias-state-error-primary)' } }, t('missingDir')))
       }
 
-      const head = [h('span', { key: 'title', style: S.rowTitle }, project.title)]
-      head.push(h(TrackerChip, { key: 'tracker', tracker: project.tracker, t }))
       // The badge is the last derived stage, persisted by `/stage`. A pinned stage
       // is marked in its tooltip, so a decision is never mistaken for a reading.
       const stageInfo = project.stage ?? null
-      head.push(
-        h(
-          'span',
-          {
-            key: 'stage',
-            className: 'dw-stage-badge',
-            style: {
-              ...S.chip,
-              color: stageInfo === null ? 'var(--dsw-alias-label-secondary)' : 'var(--dsw-alias-brand-primary)',
-              borderColor: stageInfo === null ? 'var(--dsw-alias-border-l2)' : 'var(--dsw-alias-brand-primary)',
-            },
-            title: stageInfo?.overridden === true ? t('stageOverridden') : undefined,
+      const stageBadge = h(
+        'span',
+        {
+          key: 'stage',
+          className: 'dw-stage-badge',
+          style: {
+            ...S.chip,
+            color: stageInfo === null ? 'var(--dsw-alias-label-secondary)' : 'var(--dsw-alias-brand-primary)',
+            borderColor: stageInfo === null ? 'var(--dsw-alias-border-l2)' : 'var(--dsw-alias-brand-primary)',
           },
-          stageInfo === null ? t('stageUnknown') : stageLabel(stageInfo.id, t),
-        ),
+          title: stageInfo?.overridden === true ? t('stageOverridden') : undefined,
+        },
+        stageInfo === null ? t('stageUnknown') : stageLabel(stageInfo.id, t),
       )
 
       const children = [
-        h('div', { key: 'head', style: S.rowHead }, head),
-        h('div', { key: 'meta', style: S.meta }, meta),
-      ]
-
-      if (typeof onUnbind === 'function') {
-        children.push(
-          h(
-            'div',
-            { key: 'actions', style: { marginTop: 7 } },
-            h(
-              'button',
-              {
-                type: 'button',
-                className: 'dw-unbind',
-                style: S.button,
-                onClick: (event) => {
-                  if (typeof event?.stopPropagation === 'function') event.stopPropagation()
-                  onUnbind(project)
+        h('div', { key: 'head', style: S.rowHead }, [
+          h('span', { key: 'title', style: S.rowTitle }, project.title),
+          stageBadge,
+        ]),
+        h('div', { key: 'foot', style: S.rowFoot }, [
+          h(TrackerChip, { key: 'tracker', tracker: project.tracker, t }),
+          ...meta,
+          typeof onUnbind === 'function'
+            ? h(
+                'button',
+                {
+                  key: 'unbind',
+                  type: 'button',
+                  className: 'dw-unbind',
+                  style: S.rowAction,
+                  onClick: (event) => {
+                    if (typeof event?.stopPropagation === 'function') event.stopPropagation()
+                    onUnbind(project)
+                  },
                 },
-              },
-              t('unbind'),
-            ),
-          ),
-        )
-      }
+                t('unbind'),
+              )
+            : null,
+        ]),
+      ]
 
       // A real button: the row is interactive, and a `div` with `onClick` cannot
       // be reached from the keyboard at all. `rowButton` resets the UA styling.
@@ -964,6 +1022,7 @@ window.__ModuleLoader__.load({
           type: 'button',
           key: project.key,
           className: active === true ? 'dw-project dw-project-active' : 'dw-project',
+          'aria-current': active === true ? 'true' : undefined,
           style: active === true ? { ...S.row, ...S.rowButton, ...S.rowActive } : { ...S.row, ...S.rowButton },
           disabled: typeof onSelect !== 'function',
           onClick: typeof onSelect === 'function' ? () => onSelect(project) : undefined,
@@ -1331,7 +1390,7 @@ window.__ModuleLoader__.load({
 
       for (const item of evidence) {
         rows.push(
-          h('p', { key: `ev-${item.code}`, style: { ...S.muted, margin: '6px 0 0', fontSize: 11.6 } }, `${t('stageEvidenceNote')}：${item.note}`),
+          h('p', { key: `ev-${item.code}`, style: { ...S.muted, margin: '6px 0 0', fontSize: 11.6 } }, `${t('stageEvidenceNote')}：${evidenceNote(item, t)}`),
         )
       }
 
@@ -1341,7 +1400,7 @@ window.__ModuleLoader__.load({
             'div',
             { key: `by-${item.code}`, style: { ...S.banner, marginTop: 10, marginBottom: 0, borderLeftColor: 'var(--dsw-alias-state-warn-primary)' } },
             h('div', { style: S.bannerTitle }, `${t('stageBypass')} · ${item.skill}`),
-            h('p', { style: S.bannerBody }, item.note),
+            h('p', { style: S.bannerBody }, evidenceNote(item, t, 'bypassNote')),
           ),
         )
       }
@@ -1902,7 +1961,12 @@ window.__ModuleLoader__.load({
       '.dw-artifact{display:flex;align-items:baseline;gap:7px;width:100%;text-align:left;background:transparent;border:0;font:inherit;color:inherit;cursor:pointer}',
       '.dw-artifact:hover{background:var(--dsw-alias-bg-layer-2)}',
       '.dw-project{cursor:pointer}',
-      '.dw-project:hover{background:var(--dsw-alias-bg-layer-2)}',
+      // Hover and selection used to paint the SAME background, so a hovered row
+      // looked selected and clicking around looked like selecting several. The
+      // selected row now carries a brand bar and a weight change that hover does
+      // not, and hover is suppressed on the row already selected.
+      '.dw-project:hover:not(.dw-project-active){background:var(--dsw-alias-bg-layer-2)}',
+      '.dw-project-active{box-shadow:inset 3px 0 0 var(--dsw-alias-brand-primary);font-weight:600}',
       '.dw-settings-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--dsw-alias-border-l1);flex-wrap:wrap}',
       '.dw-settings-row > label{display:flex;align-items:center;gap:7px;font-size:12.6px;cursor:pointer}',
       '.dw-settings-row .dw-settings-note{font-size:11px;color:var(--dsw-alias-label-secondary);margin-left:auto;max-width:54%}',
@@ -2241,14 +2305,22 @@ window.__ModuleLoader__.load({
         }
       }, [activePath, props, reload])
 
-      /** Ask the host what this step would say, then show it before sending it. */
+      /**
+       * Ask the host what this step would say, then show it before sending it.
+       *
+       * `options.path` lets a session-side action dispatch for **its own** project
+       * even when the panel has never loaded one. That was the bug behind
+       * "the button jumps here and then does nothing": the intent carried the
+       * path, but this only ever looked at the panel's currently loaded project.
+       */
       const openDispatch = useCallback(async (stageId, options = {}) => {
-        if (activePath === null) return
+        const target = typeof options.path === 'string' && options.path.length > 0 ? options.path : activePath
+        if (target === null || target === undefined) return
         setDispatchError(null)
         setDispatchNotice(null)
         setDispatchBusy(true)
         try {
-          let url = `${ROUTE_BASE}/prompt?path=${encodeURIComponent(activePath)}&stage=${encodeURIComponent(stageId)}`
+          let url = `${ROUTE_BASE}/prompt?path=${encodeURIComponent(target)}&stage=${encodeURIComponent(stageId)}`
           if (typeof options.handoff === 'string' && options.handoff.length > 0) {
             url += `&handoff=${encodeURIComponent(options.handoff)}`
           }
@@ -2328,15 +2400,45 @@ window.__ModuleLoader__.load({
       // A session-side action opens the confirmation for what it asked for. The
       // intent object carries its own `handled` mark, so a later re-render cannot
       // open the same dialog twice.
+      //
+      // Everything here works from the intent's own path, because the panel may
+      // never have loaded a project: the user can click "advance" in a session
+      // without ever having opened the workbench.
       useEffect(() => {
         if (focus === null || focus.handled === true) return
         focus.handled = true
+        const target = typeof focus.path === 'string' && focus.path.length > 0
+          ? focus.path
+          : activePath
+        if (target === null || target === undefined) return
+
+        // Land the panel on the project the action came from.
+        loadOverview()
+          .then((data) => {
+            const match = (data?.projects ?? []).find((row) => row.path === target)
+            if (match !== undefined) setActiveKey(match.key)
+          })
+          .catch(() => {})
+
         if (focus.kind === 'handoff') {
-          openDispatch('handoff')
-        } else if (focus.kind === 'advance' && typeof stageInfo?.stage === 'string') {
-          openDispatch(stageInfo.stage)
+          openDispatch('handoff', { path: target })
+          return
         }
-      }, [focus, stageInfo, openDispatch])
+        if (focus.kind !== 'advance') return
+
+        // The stage may not be loaded yet, so ask for this project's own stage
+        // rather than silently doing nothing — which is what it used to do.
+        const known = target === activePath && typeof stageInfo?.stage === 'string' ? stageInfo.stage : null
+        if (known !== null) {
+          openDispatch(known, { path: target })
+          return
+        }
+        getJson(`${ROUTE_BASE}/stage?path=${encodeURIComponent(target)}`)
+          .then((info) => {
+            if (typeof info?.stage === 'string') openDispatch(info.stage, { path: target })
+          })
+          .catch(() => {})
+      }, [focus, stageInfo, activePath, openDispatch])
 
       const onBind = useCallback(async () => {
         if (typeof props?.pickDirectory !== 'function') return

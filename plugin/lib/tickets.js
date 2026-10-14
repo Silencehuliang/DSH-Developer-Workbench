@@ -19,7 +19,10 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
-import { execFileSync } from 'node:child_process'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+
+const execFileAsync = promisify(execFile)
 
 /** Status strings that mean a local ticket is finished. */
 const DONE_STATUSES = new Set(['resolved', 'done', 'closed', 'completed', 'merged', 'wontfix'])
@@ -222,8 +225,13 @@ export function analyseBoard(tickets) {
  * The runner is the injection point that keeps every CLI-touching assertion
  * offline: tests pass their own function instead of this one.
  *
+ * **Asynchronous on purpose.** `execFileSync` blocks Node's event loop for the
+ * life of every child process; reading one repository's board means a dozen `gh`
+ * invocations, and blocking on each of them held the entire DSH web server while
+ * it ran. Awaiting yields the loop instead.
+ *
  * @param options - runner options.
- * @returns `(command, args, options) => { ok, code, stdout, stderr, spawnFailed }`.
+ * @returns `async (command, args, options) => { ok, code, stdout, stderr, spawnFailed }`.
  */
 export function createCommandRunner(options = {}) {
   const binaries = {
@@ -231,27 +239,53 @@ export function createCommandRunner(options = {}) {
     glab: options.glab ?? 'glab',
     git: options.git ?? 'git',
   }
-  return (command, args, runOptions = {}) => {
+  return async (command, args, runOptions = {}) => {
     const binary = binaries[command] ?? command
     try {
-      const stdout = execFileSync(binary, args, {
+      const { stdout, stderr } = await execFileAsync(binary, args, {
         cwd: runOptions.cwd,
         encoding: 'utf8',
         timeout: runOptions.timeoutMs ?? 20000,
         windowsHide: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
+        maxBuffer: 16 * 1024 * 1024,
       })
-      return { ok: true, code: 0, stdout, stderr: '', spawnFailed: false }
+      return { ok: true, code: 0, stdout, stderr: stderr ?? '', spawnFailed: false }
     } catch (error) {
       return {
         ok: false,
-        code: typeof error?.status === 'number' ? error.status : null,
+        code: typeof error?.code === 'number' ? error.code : null,
         stdout: typeof error?.stdout === 'string' ? error.stdout : '',
         stderr: typeof error?.stderr === 'string' ? error.stderr : String(error?.message ?? error),
         spawnFailed: error?.code === 'ENOENT',
       }
     }
   }
+}
+
+/**
+ * Run an async worker over a list with bounded concurrency.
+ *
+ * One `gh api` call per issue is unavoidable — the list endpoint reports only how
+ * many blockers an issue has, not which — but they need not be serial. Bounded so
+ * a large board cannot spawn a hundred processes at once.
+ *
+ * @param items - the list to process.
+ * @param limit - how many workers to run at once.
+ * @param worker - the async worker.
+ * @returns results in input order.
+ */
+export async function mapLimited(items, limit, worker) {
+  const results = new Array(items.length)
+  let cursor = 0
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor
+      cursor += 1
+      results[index] = await worker(items[index], index)
+    }
+  })
+  await Promise.all(workers)
+  return results
 }
 
 /**
@@ -275,8 +309,8 @@ export function parseGitHubRemote(url) {
  * @param run - command runner.
  * @returns `{ owner, repo }`, or null when it cannot be inferred.
  */
-export function resolveGitHubRepo(projectPath, run) {
-  const remote = run('git', ['remote', 'get-url', 'origin'], { cwd: projectPath })
+export async function resolveGitHubRepo(projectPath, run) {
+  const remote = await run('git', ['remote', 'get-url', 'origin'], { cwd: projectPath })
   if (remote.ok !== true) return null
   return parseGitHubRemote(remote.stdout)
 }
@@ -301,9 +335,9 @@ function firstLine(text) {
  * @param options.limit - largest number of issues to read.
  * @returns `{ ok: true, tickets, notes }` or `{ ok: false, code, message }`.
  */
-export function readGitHubTickets({ run, owner, repo, limit = MAX_TICKETS }) {
+export async function readGitHubTickets({ run, owner, repo, limit = MAX_TICKETS, concurrency = 6 }) {
   const slug = `${owner}/${repo}`
-  const list = run('gh', [
+  const list = await run('gh', [
     'issue', 'list',
     '--repo', slug,
     '--state', 'all',
@@ -336,21 +370,22 @@ export function readGitHubTickets({ run, owner, repo, limit = MAX_TICKETS }) {
   // Native edges are the canonical representation, and our own tickets set ONLY
   // those (the ticket template omits the text section once edges are native), so
   // a body-only read would call every blocked ticket startable.
-  const edges = new Map()
-  for (const row of rows) {
-    const dependencies = run('gh', [
+  //
+  // One call per issue is unavoidable — the list endpoint reports only how many
+  // blockers an issue has, not which — so they run concurrently rather than in a
+  // loop. Serially this dominated the whole board read.
+  const edgeRows = await mapLimited(rows, concurrency, async (row) => {
+    const dependencies = await run('gh', [
       'api', `repos/${slug}/issues/${row.number}/dependencies/blocked_by`,
       '--jq', '.[].number',
     ])
-    if (dependencies.ok !== true) {
-      edges.set(row.number, null)
-      continue
-    }
-    edges.set(
+    if (dependencies.ok !== true) return [row.number, null]
+    return [
       row.number,
       dependencies.stdout.split(/\s+/).filter((token) => /^\d+$/.test(token)).map(Number),
-    )
-  }
+    ]
+  })
+  const edges = new Map(edgeRows)
 
   const tickets = rows.map((row) => parseGitHubIssue(row, edges.get(row.number) ?? null))
   const unread = [...edges.entries()].filter(([, value]) => value === null).map(([number]) => String(number)).sort()
