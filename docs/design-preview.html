@@ -1,0 +1,1023 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>开发工作台 · DSH 插件设计方案</title>
+<style>
+  :root{
+    --bg:#0d0e11; --bg2:#14161a; --panel:#191c21; --panel2:#1f232a;
+    --line:#2b3038; --line2:#3a4149;
+    --fg:#e8eaed; --fg2:#a9b1ba; --fg3:#6f7883;
+    --accent:#4d7cfe; --accent2:#6f97ff; --accentbg:#16203c;
+    --ok:#3fbf7f; --okbg:#132a20;
+    --warn:#e0a33e; --warnbg:#2c2415;
+    --bad:#e0574d; --badbg:#2e1a18;
+    --violet:#a07cf5; --violetbg:#221a35;
+    --radius:12px; --radius-sm:8px;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  }
+  html[data-theme="light"]{
+    --bg:#f6f7f9; --bg2:#ffffff; --panel:#ffffff; --panel2:#f2f4f7;
+    --line:#e3e6ea; --line2:#cfd5dc;
+    --fg:#1a1d21; --fg2:#5a636e; --fg3:#8b95a1;
+    --accent:#3563e9; --accent2:#274ec4; --accentbg:#eaf0ff;
+    --ok:#1f9254; --okbg:#e6f6ed;
+    --warn:#a56a09; --warnbg:#fdf3e0;
+    --bad:#c73a30; --badbg:#fdeceb;
+    --violet:#7b53d6; --violetbg:#f1ecfe;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0;background:var(--bg);color:var(--fg);
+    font-family:var(--sans);font-size:15px;line-height:1.65;
+    -webkit-font-smoothing:antialiased;
+  }
+  a{color:var(--accent2);text-decoration:none}
+  a:hover{text-decoration:underline}
+  code{font-family:var(--mono);font-size:.86em;background:var(--panel2);
+    border:1px solid var(--line);border-radius:5px;padding:1px 5px}
+  .wrap{display:grid;grid-template-columns:236px minmax(0,1fr);gap:0;max-width:1500px;margin:0 auto}
+
+  /* ── TOC ── */
+  .toc{position:sticky;top:0;align-self:start;height:100vh;overflow:auto;
+    padding:26px 16px 40px;border-right:1px solid var(--line);background:var(--bg2)}
+  .toc .brand{display:flex;align-items:center;gap:9px;margin-bottom:22px}
+  .toc .logo{width:26px;height:26px;border-radius:7px;flex:0 0 auto;
+    background:linear-gradient(135deg,var(--accent),var(--violet));
+    display:grid;place-items:center;font-size:14px}
+  .toc .brand b{font-size:13.5px;letter-spacing:.2px}
+  .toc .brand span{display:block;font-size:11px;color:var(--fg3);font-weight:400}
+  .toc nav{display:flex;flex-direction:column;gap:1px}
+  .toc nav a{color:var(--fg2);font-size:13px;padding:6px 9px;border-radius:7px;
+    display:flex;gap:8px;align-items:baseline;transition:.14s}
+  .toc nav a:hover{background:var(--panel);color:var(--fg);text-decoration:none}
+  .toc nav a.on{background:var(--accentbg);color:var(--accent2);font-weight:600}
+  .toc nav a i{font-style:normal;font-family:var(--mono);font-size:10.5px;color:var(--fg3);min-width:14px}
+  .toc nav a.on i{color:var(--accent2)}
+  .toc .tgl{margin-top:22px;width:100%;background:var(--panel);color:var(--fg2);
+    border:1px solid var(--line);border-radius:8px;padding:7px;cursor:pointer;font-size:12px;font-family:var(--sans)}
+  .toc .tgl:hover{color:var(--fg);border-color:var(--line2)}
+
+  main{min-width:0;padding:0 40px 120px}
+
+  /* ── HERO ── */
+  .hero{padding:64px 0 40px;border-bottom:1px solid var(--line)}
+  .hero .tag{display:inline-flex;align-items:center;gap:7px;font-size:12px;
+    background:var(--warnbg);color:var(--warn);border:1px solid color-mix(in srgb,var(--warn) 30%,transparent);
+    padding:4px 11px;border-radius:999px;font-weight:600}
+  .hero h1{font-size:40px;line-height:1.18;margin:18px 0 10px;letter-spacing:-.6px}
+  .hero h1 em{font-style:normal;background:linear-gradient(100deg,var(--accent2),var(--violet));
+    -webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero p.lead{font-size:17px;color:var(--fg2);max-width:760px;margin:0}
+  .hero .meta{display:flex;gap:26px;flex-wrap:wrap;margin-top:26px;font-size:13px;color:var(--fg3)}
+  .hero .meta b{color:var(--fg);font-weight:600}
+
+  /* ── SECTION ── */
+  section{padding:52px 0 8px;scroll-margin-top:24px}
+  section > h2{font-size:11.5px;letter-spacing:1.6px;text-transform:uppercase;
+    color:var(--fg3);font-weight:700;margin:0 0 6px}
+  section > h3{font-size:26px;margin:0 0 8px;letter-spacing:-.3px}
+  section > p.sub{color:var(--fg2);margin:0 0 26px;max-width:820px;font-size:14.5px}
+
+  /* ── CARDS ── */
+  .cards{display:grid;gap:14px}
+  .cards.c3{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .cards.c2{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:18px}
+  .card .ic{font-size:19px;margin-bottom:9px;display:block}
+  .card b{display:block;font-size:14.5px;margin-bottom:5px}
+  .card p{margin:0;font-size:13.2px;color:var(--fg2);line-height:1.6}
+  .card.hl{border-color:color-mix(in srgb,var(--accent) 45%,transparent);background:linear-gradient(180deg,var(--accentbg),transparent 70%),var(--panel)}
+
+  /* ── MOCKUP SHELL ── */
+  .mock{border:1px solid var(--line2);border-radius:14px;overflow:hidden;
+    background:var(--bg);box-shadow:0 26px 60px -28px rgba(0,0,0,.75);margin:0 0 14px}
+  .mock .bar{display:flex;align-items:center;gap:7px;padding:9px 13px;
+    background:var(--panel2);border-bottom:1px solid var(--line)}
+  .mock .dot{width:10px;height:10px;border-radius:50%;background:var(--line2)}
+  .mock .dot.r{background:#e0574d}.mock .dot.y{background:#e0a33e}.mock .dot.g{background:#3fbf7f}
+  .mock .bar .t{margin-left:8px;font-size:11.5px;color:var(--fg3);font-family:var(--mono)}
+  .mock .body{display:flex;min-height:230px}
+  .cap{font-size:12.5px;color:var(--fg3);margin:0 0 22px;display:flex;gap:8px;align-items:flex-start}
+  .cap b{color:var(--fg2);font-weight:600}
+
+  /* fake sidebar */
+  .fs{width:266px;flex:0 0 auto;border-right:1px solid var(--line);
+    padding:11px 9px;display:flex;flex-direction:column;gap:3px;background:var(--bg)}
+  .fs .brandrow{display:flex;align-items:center;gap:9px;padding:5px 7px 11px}
+  .fs .fish{width:22px;height:22px;border-radius:6px;background:linear-gradient(135deg,var(--accent),var(--violet));
+    display:grid;place-items:center;font-size:12px;flex:0 0 auto}
+  .fs .brandrow span{font-size:12.5px;font-weight:600}
+  .fs .brandrow em{font-style:normal;display:block;font-size:10px;color:var(--fg3);font-family:var(--mono);font-weight:400}
+  .row{display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:8px;font-size:13px;color:var(--fg2)}
+  .row .g{width:17px;text-align:center;font-size:13.5px;opacity:.85;flex:0 0 auto}
+  .row .sp{margin-left:auto;font-size:10.5px;color:var(--fg3);font-family:var(--mono)}
+  .row.hover{background:var(--panel)}
+  .row.new{background:var(--accentbg);color:var(--accent2);font-weight:600;
+    border:1px solid color-mix(in srgb,var(--accent) 42%,transparent)}
+  .row.new .sp{color:var(--accent2);opacity:.8}
+  .badge-new{font-size:9.5px;font-weight:700;letter-spacing:.4px;background:var(--accent);color:#fff;
+    padding:2px 6px;border-radius:5px;margin-left:auto}
+  .fs .sec{font-size:10.5px;letter-spacing:.9px;text-transform:uppercase;color:var(--fg3);
+    padding:14px 9px 5px;font-weight:700}
+  .fs .sess{display:flex;align-items:center;gap:7px;padding:5px 9px 5px 26px;border-radius:7px;font-size:12.4px;color:var(--fg2)}
+  .fs .sess .st{width:6px;height:6px;border-radius:50%;background:var(--ok);flex:0 0 auto}
+  .fs .sess .st.idle{background:var(--fg3)}
+  .fs .split{height:1px;background:var(--line);margin:9px 5px}
+  .fs .foot{margin-top:auto}
+  .rail{width:56px;flex:0 0 auto;border-right:1px solid var(--line);padding:11px 0 11px;
+    display:flex;flex-direction:column;align-items:center;gap:6px}
+  .rail .ic{width:32px;height:32px;border-radius:8px;display:grid;place-items:center;font-size:15px;color:var(--fg2)}
+  .rail .ic.on{background:var(--accentbg);color:var(--accent2);
+    box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 42%,transparent)}
+  .rail .sp{flex:1}
+
+  /* annotations */
+  .annot{list-style:none;padding:0;margin:0;display:grid;gap:9px}
+  .annot li{display:flex;gap:11px;font-size:13.2px;color:var(--fg2);align-items:flex-start}
+  .annot li .n{flex:0 0 auto;width:20px;height:20px;border-radius:6px;background:var(--accentbg);
+    color:var(--accent2);font-size:11px;font-weight:700;display:grid;place-items:center;font-family:var(--mono)}
+  .annot li b{color:var(--fg);font-weight:600}
+
+  /* ── MAIN PANEL MOCKUP ── */
+  .wb{flex:1;min-width:0;display:grid;grid-template-columns:212px minmax(0,1fr) 232px;gap:0}
+  .wb .col{padding:13px 12px;border-right:1px solid var(--line);min-width:0}
+  .wb .col:last-child{border-right:0}
+  .wb h4{font-size:10.5px;letter-spacing:1px;text-transform:uppercase;color:var(--fg3);
+    margin:0 0 10px;font-weight:700;display:flex;justify-content:space-between;align-items:center}
+  .proj{display:flex;flex-direction:column;gap:7px}
+  .pitem{border:1px solid var(--line);border-radius:9px;padding:8px 9px;font-size:12.4px;background:var(--panel)}
+  .pitem.on{border-color:color-mix(in srgb,var(--accent) 50%,transparent);background:var(--accentbg)}
+  .pitem .nm{display:flex;align-items:center;gap:6px;font-weight:600}
+  .pitem .nm .d{width:6px;height:6px;border-radius:50%;background:var(--ok);flex:0 0 auto}
+  .pitem .mt{color:var(--fg3);font-size:11px;font-family:var(--mono);margin-top:3px;
+    display:flex;gap:8px;flex-wrap:wrap}
+  .chip{font-size:10px;padding:1px 6px;border-radius:5px;border:1px solid var(--line2);color:var(--fg2)}
+  .chip.a{background:var(--accentbg);color:var(--accent2);border-color:color-mix(in srgb,var(--accent) 40%,transparent)}
+  .chip.ok{background:var(--okbg);color:var(--ok);border-color:color-mix(in srgb,var(--ok) 35%,transparent)}
+  .chip.wa{background:var(--warnbg);color:var(--warn);border-color:color-mix(in srgb,var(--warn) 35%,transparent)}
+  .chip.vi{background:var(--violetbg);color:var(--violet);border-color:color-mix(in srgb,var(--violet) 35%,transparent)}
+  .addbtn{margin-top:9px;border:1px dashed var(--line2);border-radius:9px;padding:7px;
+    text-align:center;font-size:12px;color:var(--fg3)}
+  /* pipeline */
+  .pipe{display:flex;align-items:center;gap:0;margin:3px 0 13px;flex-wrap:wrap}
+  .step{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--fg3);padding:4px 8px;
+    border-radius:7px;border:1px solid transparent;white-space:nowrap}
+  .step .k{width:14px;height:14px;border-radius:50%;border:1.5px solid currentColor;
+    display:grid;place-items:center;font-size:9px;flex:0 0 auto}
+  .step.done{color:var(--ok)}.step.done .k{background:var(--ok);border-color:var(--ok);color:#fff}
+  .step.now{color:var(--accent2);background:var(--accentbg);border-color:color-mix(in srgb,var(--accent) 45%,transparent);font-weight:700}
+  .arw{color:var(--fg3);font-size:11px;padding:0 1px}
+  .next{display:flex;align-items:center;gap:11px;background:var(--panel2);border:1px solid var(--line);
+    border-radius:11px;padding:11px 13px;margin-bottom:15px}
+  .next .txt{flex:1;min-width:0}
+  .next .txt b{display:block;font-size:13.4px}
+  .next .txt span{font-size:11.5px;color:var(--fg3)}
+  .btn{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:8px 14px;
+    font-size:12.6px;font-weight:600;font-family:var(--sans);cursor:pointer;white-space:nowrap}
+  .btn.ghost{background:transparent;color:var(--fg2);border:1px solid var(--line2)}
+  /* tickets */
+  .tk{display:flex;gap:9px;align-items:flex-start;border:1px solid var(--line);border-radius:9px;
+    padding:8px 10px;margin-bottom:7px;font-size:12.4px;background:var(--panel)}
+  .tk.ready{border-color:color-mix(in srgb,var(--ok) 42%,transparent)}
+  .tk .no{font-family:var(--mono);font-size:11px;color:var(--fg3);flex:0 0 auto;padding-top:1px}
+  .tk .bd{flex:1;min-width:0}
+  .tk .t{font-weight:600;display:block;margin-bottom:3px}
+  .tk .m{color:var(--fg3);font-size:11px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .bar2{height:4px;border-radius:3px;background:var(--line);overflow:hidden;margin-top:5px}
+  .bar2 i{display:block;height:100%;background:var(--ok)}
+  /* right col lists */
+  .li{display:flex;align-items:center;gap:7px;font-size:12.2px;padding:5px 7px;border-radius:6px;color:var(--fg2)}
+  .li:hover{background:var(--panel)}
+  .li .g{font-size:12px;opacity:.8}
+  .li .r{margin-left:auto;font-size:10px;color:var(--fg3);font-family:var(--mono)}
+  .grid27{display:grid;grid-template-columns:repeat(9,1fr);gap:3px;margin:4px 0 8px}
+  .grid27 i{aspect-ratio:1;border-radius:3px;background:var(--ok);opacity:.9;display:block}
+  .grid27 i.no{background:var(--line2);opacity:.55}
+  .kv{display:flex;justify-content:space-between;font-size:11.8px;padding:3px 0;color:var(--fg2)}
+  .kv b{color:var(--fg);font-family:var(--mono);font-size:11.5px;font-weight:600}
+
+  /* modal */
+  .modal{margin:0;border:1px solid var(--line2);border-radius:14px;background:var(--panel);
+    padding:0;overflow:hidden;box-shadow:0 30px 70px -30px rgba(0,0,0,.8)}
+  .modal .hd{padding:14px 17px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:9px}
+  .modal .hd b{font-size:14.5px}
+  .modal .hd .x{margin-left:auto;color:var(--fg3);font-size:15px}
+  .modal .bd{padding:16px 17px}
+  .field{margin-bottom:13px}
+  .field label{display:block;font-size:11px;letter-spacing:.7px;text-transform:uppercase;
+    color:var(--fg3);font-weight:700;margin-bottom:5px}
+  .field .val{background:var(--bg);border:1px solid var(--line);border-radius:8px;
+    padding:8px 11px;font-size:12.8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  textarea{width:100%;background:var(--bg);border:1px solid var(--line);border-radius:8px;
+    color:var(--fg);font-family:var(--mono);font-size:12px;line-height:1.6;padding:11px;
+    resize:vertical;min-height:132px}
+  .modal .ft{padding:12px 17px;border-top:1px solid var(--line);display:flex;gap:9px;
+    align-items:center;background:var(--panel2)}
+  .modal .ft .note{font-size:11.3px;color:var(--fg3);margin-right:auto}
+
+  /* session surfaces */
+  .sgrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+  .scell{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}
+  .scell .h{padding:11px 14px;border-bottom:1px solid var(--line);font-size:13px;font-weight:600;
+    display:flex;align-items:center;gap:7px}
+  .scell .h .k{font-family:var(--mono);font-size:9.5px;color:var(--fg3);font-weight:400;
+    margin-left:auto;text-align:right;line-height:1.3}
+  .scell .c{padding:14px}
+  .dockbar{display:flex;align-items:center;gap:9px;border:1px solid var(--line);border-radius:9px;
+    background:var(--panel2);padding:8px 11px;font-size:12.4px}
+  .turnrow{display:flex;gap:7px;flex-wrap:wrap}
+  .pill{border:1px solid var(--line2);border-radius:999px;padding:4px 11px;font-size:11.8px;color:var(--fg2)}
+  .pill.p{background:var(--accentbg);color:var(--accent2);border-color:color-mix(in srgb,var(--accent) 40%,transparent)}
+  .hovercard{border:1px solid var(--line);border-radius:9px;background:var(--panel2);padding:10px 12px;font-size:12.2px}
+  .hovercard .r{display:flex;justify-content:space-between;color:var(--fg3);font-size:11px;padding:2px 0}
+
+  /* tables */
+  table{width:100%;border-collapse:collapse;font-size:13px;margin:0 0 8px}
+  th{text-align:left;font-size:10.5px;letter-spacing:.9px;text-transform:uppercase;
+    color:var(--fg3);font-weight:700;padding:8px 11px;border-bottom:1px solid var(--line2)}
+  td{padding:9px 11px;border-bottom:1px solid var(--line);color:var(--fg2);vertical-align:top}
+  tr:last-child td{border-bottom:0}
+  td b{color:var(--fg);font-weight:600}
+  tbody tr:hover{background:var(--panel)}
+  .tbl{border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:var(--panel)}
+  .mono{font-family:var(--mono);font-size:12px}
+
+  /* architecture */
+  .arch{display:grid;grid-template-columns:1fr 92px 1fr;gap:0;align-items:stretch}
+  .abox{border:1px solid var(--line2);border-radius:12px;background:var(--panel);padding:14px}
+  .abox h5{margin:0 0 3px;font-size:13.5px}
+  .abox .sub{font-size:11px;color:var(--fg3);font-family:var(--mono);margin-bottom:11px}
+  .abox ul{margin:0;padding-left:16px;font-size:12.3px;color:var(--fg2)}
+  .abox li{margin-bottom:3px}
+  .flowarrow{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;
+    color:var(--fg3);font-size:10.5px;text-align:center}
+  .flowarrow .l{height:1px;width:64px;background:var(--line2);position:relative}
+  .flowarrow .l::after{content:"";position:absolute;right:0;top:-3px;border:3.5px solid transparent;border-left-color:var(--line2)}
+  .flowarrow .l.rev::after{right:auto;left:0;border-left-color:transparent;border-right-color:var(--line2)}
+
+  /* file tree */
+  .tree{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+    padding:16px 18px;font-family:var(--mono);font-size:12.4px;line-height:1.85;color:var(--fg2);
+    overflow-x:auto;white-space:pre}
+  .tree b{color:var(--accent2);font-weight:600}
+  .tree .c{color:var(--fg3)}
+  .tree .n{color:var(--violet)}
+
+  /* timeline */
+  .tl{position:relative;padding-left:34px}
+  .tl::before{content:"";position:absolute;left:11px;top:8px;bottom:8px;width:2px;background:var(--line)}
+  .tl .it{position:relative;margin-bottom:16px}
+  .tl .it .pt{position:absolute;left:-30px;top:5px;width:20px;height:20px;border-radius:50%;
+    background:var(--panel);border:2px solid var(--line2);display:grid;place-items:center;
+    font-size:9px;font-weight:700;font-family:var(--mono);color:var(--fg3)}
+  .tl .it.p0 .pt{border-color:var(--accent);color:var(--accent2);background:var(--accentbg)}
+  .tl .it .bx{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:13px 16px}
+  .tl .it .bx .ttl{display:flex;align-items:center;gap:9px;margin-bottom:5px}
+  .tl .it .bx .ttl b{font-size:14px}
+  .tl .it .bx .ttl .chip{margin-left:auto}
+  .tl .it .bx p{margin:0;font-size:13px;color:var(--fg2)}
+  .tl .it .bx .acc{margin-top:8px;font-size:12.3px;color:var(--fg3);
+    border-left:2px solid var(--line2);padding-left:11px}
+  .tl .it .bx .acc b{color:var(--ok);font-weight:600}
+
+  .risk{display:grid;gap:11px}
+  .rk{display:flex;gap:13px;background:var(--panel);border:1px solid var(--line);
+    border-radius:var(--radius);padding:14px 16px;align-items:flex-start}
+  .rk .lv{flex:0 0 auto;font-size:10px;font-weight:700;padding:3px 8px;border-radius:6px;letter-spacing:.5px}
+  .rk.hi .lv{background:var(--badbg);color:var(--bad)}
+  .rk.md .lv{background:var(--warnbg);color:var(--warn)}
+  .rk.lo .lv{background:var(--okbg);color:var(--ok)}
+  .rk .bd{min-width:0}
+  .rk .bd b{display:block;font-size:13.6px;margin-bottom:4px}
+  .rk .bd p{margin:0;font-size:12.8px;color:var(--fg2)}
+  .rk .bd .fx{margin-top:7px;font-size:12.5px;color:var(--fg2);
+    border-left:2px solid var(--ok);padding-left:11px}
+  .rk .bd .fx b{display:inline;color:var(--ok)}
+
+  .ok-list{list-style:none;padding:0;margin:0;display:grid;gap:8px}
+  .ok-list li{display:flex;gap:10px;font-size:13.2px;color:var(--fg2);align-items:flex-start}
+  .ok-list li .m{flex:0 0 auto;color:var(--ok);font-weight:700}
+  .no-list{list-style:none;padding:0;margin:0;display:grid;gap:8px}
+  .no-list li{display:flex;gap:10px;font-size:13.2px;color:var(--fg2);align-items:flex-start}
+  .no-list li .m{flex:0 0 auto;color:var(--bad);font-weight:700}
+
+  .callout{background:var(--accentbg);border:1px solid color-mix(in srgb,var(--accent) 38%,transparent);
+    border-radius:var(--radius);padding:15px 17px;font-size:13.4px;color:var(--fg2);margin:16px 0 0}
+  .callout b{color:var(--fg)}
+  footer{margin-top:70px;padding-top:26px;border-top:1px solid var(--line);
+    font-size:12.5px;color:var(--fg3);display:flex;gap:20px;flex-wrap:wrap}
+
+  @media(max-width:1180px){
+    .wrap{grid-template-columns:1fr}
+    .toc{position:static;height:auto;border-right:0;border-bottom:1px solid var(--line)}
+    .toc nav{flex-direction:row;flex-wrap:wrap}
+    main{padding:0 22px 80px}
+    .wb{grid-template-columns:1fr}
+    .wb .col{border-right:0;border-bottom:1px solid var(--line)}
+    .cards.c3,.sgrid{grid-template-columns:1fr}
+    .arch{grid-template-columns:1fr}
+    .flowarrow{flex-direction:row;padding:8px 0}
+    .flowarrow .l{width:44px}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<aside class="toc">
+  <div class="brand">
+    <div class="logo">🛠</div>
+    <b>开发工作台<span>dsh-developer-workbench</span></b>
+  </div>
+  <nav id="nav">
+    <a href="#glance"><i>01</i>一页看懂</a>
+    <a href="#entry"><i>02</i>左侧入口落位</a>
+    <a href="#panel"><i>03</i>主面板工作台</a>
+    <a href="#flow"><i>04</i>阶段即状态</a>
+    <a href="#dispatch"><i>05</i>派发与交接</a>
+    <a href="#session"><i>06</i>会话侧入口</a>
+    <a href="#arch"><i>07</i>架构与数据流</a>
+    <a href="#tree"><i>08</i>包结构</a>
+    <a href="#plan"><i>09</i>分期与验收</a>
+    <a href="#risk"><i>10</i>风险与对策</a>
+    <a href="#evidence"><i>11</i>机制依据</a>
+    <a href="#confirm"><i>12</i>待确认</a>
+  </nav>
+  <button class="tgl" id="tgl">☾ 切换明暗</button>
+</aside>
+
+<main>
+
+<!-- ══════════ HERO ══════════ -->
+<header class="hero">
+  <span class="tag">● 设计稿 · 待你确认后开工</span>
+  <h1>在 DSH 里长出一个<br><em>开发工作台</em></h1>
+  <p class="lead">
+    左侧「新会话」下方、「插件」上方新增一个入口；点开后是绑定本地项目的开发工作台。
+    它用 <b>Matt Pocock 的 27 个技能</b>当阶段引擎，用<b>磁盘产物</b>推导当前进度，
+    把「下一步」连同完整上下文派发给对应的工作区会话 —— 管流程、管交接，不跟你抢会话。
+  </p>
+  <div class="meta">
+    <span><b>形态</b> profile 插件（宿主 + 浏览器双半身）</span>
+    <span><b>依赖</b> 零构建 · 零第三方包</span>
+    <span><b>定位</b> 控制台（不自己跑 agent）</span>
+    <span><b>页面</b> 单文件 HTML 设计稿</span>
+  </div>
+</header>
+
+<!-- ══════════ 01 GLANCE ══════════ -->
+<section id="glance">
+  <h2>01 · 一页看懂</h2>
+  <h3>六个关键点</h3>
+  <p class="sub">先说结论：位置是精确可控的，客户端半身可以手写、不需要打包工具，工作流状态从文件推导而不是靠人手点。</p>
+  <div class="cards c3">
+    <div class="card hl">
+      <span class="ic">📍</span>
+      <b>入口位置精确可控</b>
+      <p>侧边栏顶部顺序是「品牌 → 新会话 → 全局面板列表 → 工作区 → 设置」。内置「插件」页注册的排序值是 <code>0</code>，我们注册 <code>-10</code> 就必然落在它上方、新会话下方。</p>
+    </div>
+    <div class="card">
+      <span class="ic">🧩</span>
+      <b>零构建客户端</b>
+      <p>所有官方插件前端都是同一种 <code>window.__ModuleLoader__.load()</code> 手写格式。基线只提供 react 等少数模块，因此<b>不需要 tsdown / vite</b>，没有依赖安装。</p>
+    </div>
+    <div class="card">
+      <span class="ic">🎛</span>
+      <b>控制台，不是执行器</b>
+      <p>工作台不自己创建 agent 干活。它负责看清状态、决定下一步、生成带上下文的技能指令，然后创建/复用工作区会话并发送，再跟踪结果。</p>
+    </div>
+    <div class="card">
+      <span class="ic">🗺</span>
+      <b>阶段 = 产物的函数</b>
+      <p>是否有 spec、工单、评审记录，直接决定当前阶段。所以「下一步」是确定性的、可以解释为什么，而不是一个要你手动维护的状态。</p>
+    </div>
+    <div class="card">
+      <span class="ic">🤝</span>
+      <b>交接有落点</b>
+      <p>每轮回答结束后在会话里出现一个动作行；「推进」会打开派发确认框，提示词可编辑，发送后自动跳到那个会话。</p>
+    </div>
+    <div class="card">
+      <span class="ic">📦</span>
+      <b>技能随包内置</b>
+      <p>Matt 的 27 个技能随插件包分发（MIT + 署名），可离线安装到 <code>&lt;项目&gt;/.agents/skills</code>，一份安装同时被 Claude Code / Codex / Copilot 识别。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 02 ENTRY ══════════ -->
+<section id="entry">
+  <h2>02 · 左侧入口落位</h2>
+  <h3>新会话下方，插件上方</h3>
+  <p class="sub">下面是把 DSH 侧边栏结构按真实渲染顺序画出来的示意图。蓝框就是新增项。<b>左：展开态 · 右：折叠态</b>。</p>
+
+  <div class="mock">
+    <div class="bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="t">DSH · 左侧边栏（展开 280px ＋ 折叠 56px 对照）</span></div>
+    <div class="body">
+      <div class="fs">
+        <div class="brandrow">
+          <div class="fish">🐟</div>
+          <span>本地构建<em>0.2.0-rc.2-04f392c</em></span>
+        </div>
+        <div class="row"><span class="g">✎</span>新会话<span class="sp">Ctrl N</span></div>
+        <div class="row new"><span class="g">🛠</span>开发工作台<span class="badge-new">新增</span></div>
+        <div class="row"><span class="g">⬡</span>插件<span class="sp">order 0</span></div>
+        <div class="split"></div>
+        <div class="sec">工作区</div>
+        <div class="row hover"><span class="g">▾</span>Developer Workbench<span class="sp">3</span></div>
+        <div class="sess"><span class="st"></span>阶段派发 · 拆工单</div>
+        <div class="sess"><span class="st idle"></span>收尾 · handoff</div>
+        <div class="sess"><span class="st idle"></span>讨论方案</div>
+        <div class="row"><span class="g">▸</span>Goal Dashboard<span class="sp">1</span></div>
+        <div class="foot">
+          <div class="split"></div>
+          <div class="row"><span class="g">⚙</span>设置</div>
+        </div>
+      </div>
+      <div class="rail">
+        <div class="ic">✎</div>
+        <div class="ic on" title="开发工作台">🛠</div>
+        <div class="ic">⬡</div>
+        <div class="sp"></div>
+        <div class="ic">⚙</div>
+      </div>
+      <div style="flex:1;display:grid;place-items:center;color:var(--fg3);font-size:12.5px;text-align:center;padding:24px">
+        点击任一状态即切换到对应主面板<br>
+        <span style="opacity:.7">（折叠态只显示图标，悬停出 tooltip）</span>
+      </div>
+    </div>
+  </div>
+
+  <ul class="annot" style="margin-top:18px">
+    <li><span class="n">A</span><span><b>不与官方 UI 抢位置。</b>我们只往「全局面板列表」这个公开插槽里加一项，不动侧边栏本身的渲染代码，未来 DSH 升级也不会冲突。</span></li>
+    <li><span class="n">B</span><span><b>同一个 id 双点注册。</b>列表项（图标+文字）注册到 <code>sidebar.panellist</code>；点开后的页面注册到 <code>main</code> 这个按 key 分发的插槽，key 用同一个 <code>developer-workbench</code>。</span></li>
+    <li><span class="n">C</span><span><b>选中态白拿。</b>每一行自己读「我是不是当前面板」，高亮、无障碍语义、折叠态 tooltip 都由官方外壳提供。</span></li>
+    <li><span class="n">D</span><span><b>排序是升序。</b>插件页 = <code>0</code>，我们用 <code>-10</code>；若以后还有别的入口插入，只改这一个数字即可重排。</span></li>
+  </ul>
+</section>
+
+<!-- ══════════ 03 PANEL ══════════ -->
+<section id="panel">
+  <h2>03 · 主面板工作台</h2>
+  <h3>三栏：项目 · 流水线 · 产物</h3>
+  <p class="sub">左栏选项目，中栏看进度并按下「下一步」，右栏查产物、技能就位情况与 Git 概览。下面是按真实比例画的界面示意。</p>
+
+  <div class="mock">
+    <div class="bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="t">DSH · 主面板 / developer-workbench</span></div>
+    <div class="body">
+      <div class="wb">
+        <!-- col 1 -->
+        <div class="col">
+          <h4>项目 <span style="font-family:var(--mono);color:var(--fg3);text-transform:none">2</span></h4>
+          <div class="proj">
+            <div class="pitem on">
+              <div class="nm"><span class="d"></span>Developer Workbench</div>
+              <div class="mt"><span>main</span><span>±3</span><span class="chip a">tickets</span></div>
+            </div>
+            <div class="pitem">
+              <div class="nm"><span class="d" style="background:var(--fg3)"></span>Goal Dashboard</div>
+              <div class="mt"><span>feat/board</span><span>±0</span><span class="chip ok">implement</span></div>
+            </div>
+          </div>
+          <div class="addbtn">＋ 绑定本地项目</div>
+          <p style="font-size:11.3px;color:var(--fg3);margin:11px 2px 0;line-height:1.55">
+            「项目」就是已注册的 DSH 工作区，所以左侧列表和工作台永远一致，不会出现两套真相。
+          </p>
+        </div>
+        <!-- col 2 -->
+        <div class="col">
+          <h4>阶段流水线 <span style="font-family:var(--mono);color:var(--fg3);text-transform:none">feature: workbench-v1</span></h4>
+          <div class="pipe">
+            <span class="step done"><span class="k">✓</span>拷问</span><span class="arw">›</span>
+            <span class="step done"><span class="k">✓</span>成稿</span><span class="arw">›</span>
+            <span class="step now"><span class="k">●</span>拆工单</span><span class="arw">›</span>
+            <span class="step"><span class="k"></span>实现</span><span class="arw">›</span>
+            <span class="step"><span class="k"></span>评审</span><span class="arw">›</span>
+            <span class="step"><span class="k"></span>提 PR</span><span class="arw">›</span>
+            <span class="step"><span class="k"></span>复盘</span>
+          </div>
+          <div class="next">
+            <span style="font-size:17px">▶</span>
+            <div class="txt">
+              <b>下一步：拆 tracer-bullet 工单</b>
+              <span>依据：spec 已存在 · <code class="mono">.scratch/</code> 下还没有工单</span>
+            </div>
+            <button class="btn">派发 to-tickets</button>
+          </div>
+          <h4>工单看板 <span style="font-family:var(--mono);color:var(--fg3);text-transform:none">.scratch/workbench-v1/issues</span></h4>
+          <div class="tk ready">
+            <span class="no">01</span>
+            <div class="bd">
+              <span class="t">侧边栏入口与面板骨架</span>
+              <div class="m"><span class="chip ok">可开工</span><span>无阻塞</span><span>验收 3/3</span></div>
+              <div class="bar2"><i style="width:100%"></i></div>
+            </div>
+          </div>
+          <div class="tk">
+            <span class="no">02</span>
+            <div class="bd">
+              <span class="t">宿主路由与阶段推导</span>
+              <div class="m"><span class="chip wa">被 01 阻塞</span><span>验收 0/2</span></div>
+              <div class="bar2"><i style="width:0%"></i></div>
+            </div>
+          </div>
+          <div class="tk">
+            <span class="no">03</span>
+            <div class="bd">
+              <span class="t">工单解析与看板渲染</span>
+              <div class="m"><span class="chip wa">被 02 阻塞</span><span>验收 1/4</span></div>
+              <div class="bar2"><i style="width:25%"></i></div>
+            </div>
+          </div>
+        </div>
+        <!-- col 3 -->
+        <div class="col">
+          <h4>产物</h4>
+          <div class="li"><span class="g">📄</span>spec-workbench-v1.md<span class="r">md</span></div>
+          <div class="li"><span class="g">🧭</span>adr/0003-面板插槽.md<span class="r">md</span></div>
+          <div class="li"><span class="g">📖</span>GLOSSARY.md<span class="r">md</span></div>
+          <div class="li"><span class="g">📨</span>handoff-1418.md<span class="r">temp</span></div>
+          <h4 style="margin-top:15px">技能自检 <span style="font-family:var(--mono);color:var(--fg3);text-transform:none">27/27</span></h4>
+          <div class="grid27">
+            <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+            <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+            <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i class="no"></i>
+          </div>
+          <p style="font-size:10.8px;color:var(--fg3);margin:0 0 4px">26 项已安装 · 1 项缺失（点击查看如何补齐）</p>
+          <h4 style="margin-top:15px">Git 概览</h4>
+          <div class="kv"><span>分支</span><b>main</b></div>
+          <div class="kv"><span>变更文件</span><b>3</b></div>
+          <div class="kv"><span>最近提交</span><b>a91f2c4</b></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <ul class="annot" style="margin-top:18px">
+    <li><span class="n">1</span><span><b>左栏即工作区。</b>显示分支、脏文件数、当前阶段徽章、活跃会话数；「绑定本地项目」把还没注册的目录登记成工作区，而不是另起一套登记表。</span></li>
+    <li><span class="n">2</span><span><b>阶段条可解释。</b>每一步都标出「凭什么判断到这里」，鼠标悬停给出依据文件路径；已完成的打勾，当前的蓝底高亮。</span></li>
+    <li><span class="n">3</span><span><b>「下一步」是唯一主动作。</b>它旁边永远写清依据和将要调用的技能，不让工作台变成一个要你猜的按钮墙。</span></li>
+    <li><span class="n">4</span><span><b>工单看板直接解析 markdown。</b>读 <code>.scratch/&lt;feature&gt;/issues/NN-*.md</code> 的标题、Blocked by、Status 和验收项勾选，标出「可开工」的 frontier。</span></li>
+    <li><span class="n">5</span><span><b>技能自检是你点名要的。</b>每个技能一格，缺哪一项一眼看出；这里也是诊断「技能不被 DSH 发现」问题的窗口。</span></li>
+  </ul>
+</section>
+
+<!-- ══════════ 04 FLOW ══════════ -->
+<section id="flow">
+  <h2>04 · 阶段即状态</h2>
+  <h3>工作流管控的核心：读磁盘，不靠人手填</h3>
+  <p class="sub">下面是阶段推导链路。左侧是判定依据，右侧是这一步调用的 Matt Pocock 技能。状态是<b>算出来的</b>，所以可以随时解释、可以重算、不会漂移。</p>
+
+  <div class="tbl" style="margin-bottom:18px">
+    <table>
+      <thead><tr><th style="width:118px">阶段</th><th style="width:270px">判定依据（磁盘事实）</th><th style="width:210px">对应技能</th><th>派发出去之后会发生什么</th></tr></thead>
+      <tbody>
+        <tr><td><b>setup</b><span class="chip" style="margin-left:6px">一次性</span></td><td>项目里没有 tracker 声明</td><td class="mono">setup-matt-pocock-skills</td><td>确定 issue tracker、triage 标签词汇、领域文档布局，之后所有阶段都按这套约定走</td></tr>
+        <tr><td><b>grill</b></td><td>还没有 spec 产物</td><td class="mono">grilling · grill-with-docs</td><td>对方案做一轮拷问，顺手产出 ADR 与术语表，把没想清的地方逼出来</td></tr>
+        <tr><td><b>spec</b></td><td>没有成稿的 spec</td><td class="mono">to-spec</td><td>把对话综合成 spec 并发布到 tracker，不做二次访谈</td></tr>
+        <tr><td><b>tickets</b></td><td><code>.scratch/&lt;feature&gt;/issues/</code> 为空</td><td class="mono">to-tickets</td><td>拆成 tracer-bullet 垂直切片，每单一个文件并声明 Blocked by 依赖边</td></tr>
+        <tr><td><b>implement</b></td><td>存在未完成工单 → 取 frontier</td><td class="mono">implement · implement-spec · tdd</td><td>实现「所有阻塞都已解除」的那张工单；测试优先时叠加 tdd</td></tr>
+        <tr><td><b>review</b></td><td>工单全部完成，无评审记录</td><td class="mono">code-review</td><td>按「规范」与「是否实现 spec」两条轴并行走查，并排给出结论</td></tr>
+        <tr><td><b>pr</b></td><td>评审通过</td><td class="mono">pr</td><td>撰写 PR 正文</td></tr>
+        <tr><td><b>retro</b></td><td>已提 PR</td><td class="mono">retro</td><td>对这次会话做复盘</td></tr>
+        <tr><td><b>旁路</b></td><td>工作量超出单会话承载</td><td class="mono">wayfinder</td><td>先在 tracker 上铺一张决策地图，逐张解决到路线清楚为止</td></tr>
+        <tr><td><b>交接</b></td><td>任意阶段收尾</td><td class="mono">handoff</td><td>把当前会话压缩成交接文档（含「下一个 agent 该调哪些技能」），落到系统临时目录</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="cards c2">
+    <div class="card">
+      <b>为什么要有「旁路」</b>
+      <p>Matt 的流程里 <code>wayfinder</code> 专门处理「一个会话装不下」的大块工作：先在 tracker 上把决策问题铺成地图，逐个解决。工作台检测到工单爆炸或 spec 超出规模时会主动建议走它，而不是硬塞进 implement。</p>
+    </div>
+    <div class="card">
+      <b>为什么要有「交接」</b>
+      <p>上下文窗口是硬的。<code>handoff</code> 负责把当前对话压成文档、只引用已有产物（spec/工单/ADR）不重复内容，并列出下一个 agent 该调用的技能。工作台负责记住这份文档在哪、并把新会话接到它上面。</p>
+    </div>
+  </div>
+
+  <div class="callout">
+    <b>关键设计取舍：</b>阶段状态<b>不写死在人手维护的字段里</b>，而是每次都从文件系统重新推导。人工可以覆盖（比如「我确实想跳过拷问」），但覆盖只是一层显式补丁，面板会标出「已被手动覆盖」，避免状态和历史脱节。
+  </div>
+</section>
+
+<!-- ══════════ 05 DISPATCH ══════════ -->
+<section id="dispatch">
+  <h2>05 · 派发与交接</h2>
+  <h3>点「下一步」之后看到什么</h3>
+  <p class="sub">不搞静默魔法：发送前一定给你看清楚目标、以及将要发出去的完整提示词，而且提示词可编辑。</p>
+
+  <div class="modal">
+    <div class="hd"><span>▶</span><b>派发：拆 tracer-bullet 工单</b><span class="x">✕</span></div>
+    <div class="bd">
+      <div class="field">
+        <label>目标工作区</label>
+        <div class="val"><span class="chip a">Developer Workbench</span><span style="color:var(--fg3);font-family:var(--mono);font-size:11.5px">E:/Development/Agents_Project/dsh_project/Developer Workbench</span></div>
+      </div>
+      <div class="field">
+        <label>目标会话</label>
+        <div class="val"><span class="chip ok">新建会话</span><span style="color:var(--fg3);font-size:12px">或选择该项目下已有会话继续</span></div>
+      </div>
+      <div class="field">
+        <label>将发送的提示词（可编辑）</label>
+        <textarea spellcheck="false">请先读取并严格遵循 .agents/skills/to-tickets/SKILL.md 的流程
+（若 skill 工具能加载 "to-tickets"，优先用它）。
+
+基于 docs/specs/workbench-v1.md 把工作拆成 tracer-bullet 工单：
+- 每个切片要垂直贯穿各层，单独可验证
+- 按依赖顺序编号，写在 .scratch/workbench-v1/issues/NN-<slug>.md
+- 每单声明 Blocked by，并列出验收项
+
+tracker：本地文件（.scratch/）
+triage 标签：ready-for-agent
+完成后回报工单清单与依赖边。</textarea>
+      </div>
+    </div>
+    <div class="ft">
+      <span class="note">发送后自动跳到该会话，工作台继续跟踪阶段变化</span>
+      <button class="btn ghost">复制提示词</button>
+      <button class="btn">新建会话并发送</button>
+    </div>
+  </div>
+
+  <div class="cards c3" style="margin-top:20px">
+    <div class="card">
+      <span class="ic">①</span><b>生成</b>
+      <p>宿主半身按「项目 + 阶段 + feature + 目标工单」拼出提示词：技能路径、产物路径、tracker 约定、triage 标签、完成时的回报要求。</p>
+    </div>
+    <div class="card">
+      <span class="ic">②</span><b>确认</b>
+      <p>面板弹出确认框，全文可改。这一步是刻意的：工作台永远不背着你把内容发进会话。</p>
+    </div>
+    <div class="card">
+      <span class="ic">③</span><b>送达并接力</b>
+      <p>创建/复用会话 → 以队列模式发送 → 跳转过去。会话跑完一轮，工作台重新扫描产物，阶段自动前进。</p>
+    </div>
+  </div>
+
+  <div class="callout">
+    <b>提示词的兜底设计：</b>每一段提示词里都会出现技能的<b>绝对路径</b>，并写明「若 <code>skill</code> 工具可用则优先用它」。因为我现在实测到你 profile 里技能发现当前是关闭的 —— 这个写法让工作流在两种情况下都能跑通（详见第 11 节）。
+  </div>
+</section>
+
+<!-- ══════════ 06 SESSION ══════════ -->
+<section id="session">
+  <h2>06 · 会话侧入口</h2>
+  <h3>你委托我定的取舍：只加三处</h3>
+  <p class="sub">原则是<b>只在干活的地方露头、绝不改官方控件内部、没有登记项目时完全不渲染</b>。下面三处都是官方公开的可选插槽。</p>
+
+  <div class="sgrid">
+    <div class="scell">
+      <div class="h"><span>▤</span>输入框下方环境栏<span class="k">conversation.<br>composer.dock</span></div>
+      <div class="c">
+        <div class="dockbar">
+          <span style="font-size:13px">🛠</span>
+          <b style="font-size:12.6px">Developer Workbench</b>
+          <span class="chip a">tickets</span>
+          <span style="color:var(--fg3);font-size:11px">下一步：拆工单</span>
+          <span style="margin-left:auto" class="pill p">推进</span>
+        </div>
+        <p style="font-size:12.2px;color:var(--fg3);margin:11px 0 0;line-height:1.6">
+          挂在输入卡片<b>下方</b>，不挤压输入框、不改工具栏。只有当前会话属于已登记项目时才出现，否则整行不存在。
+        </p>
+      </div>
+    </div>
+    <div class="scell">
+      <div class="h"><span>↩</span>每轮回答结束后<span class="k">conversation.<br>chat.turnTail</span></div>
+      <div class="c">
+        <div class="turnrow">
+          <span class="pill">记录到工作台</span>
+          <span class="pill p">推进到下一阶段…</span>
+          <span class="pill">生成交接文档</span>
+        </div>
+        <p style="font-size:12.2px;color:var(--fg3);margin:11px 0 0;line-height:1.6">
+          回答刚产出产物，是交接的天然落点。这几个动作只走工作台的派发确认流程，不直接改任何东西。
+        </p>
+      </div>
+    </div>
+    <div class="scell">
+      <div class="h"><span>ⓘ</span>会话悬停卡一行<span class="k">sidebar.session.<br>row.hover</span></div>
+      <div class="c">
+        <div class="hovercard">
+          <div style="font-weight:600;font-size:12.8px;margin-bottom:7px">阶段派发 · 拆工单</div>
+          <div class="r"><span>相对时间</span><span>3 分钟前</span></div>
+          <div class="r" style="color:var(--accent2)"><span>项目 · 阶段</span><span>开发工作台 · tickets</span></div>
+          <div class="r"><span>状态</span><span>已完成</span></div>
+        </div>
+        <p style="font-size:12.2px;color:var(--fg3);margin:11px 0 0;line-height:1.6">
+          纯展示，零交互风险。让用户在会话列表里就能分清哪个会话属于哪条工作流。
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="cards c2" style="margin-top:20px">
+    <div class="card" style="border-color:color-mix(in srgb,var(--bad) 30%,transparent)">
+      <b style="color:var(--bad)">✕ 明确不做（v1）</b>
+      <ul class="no-list" style="margin-top:9px">
+        <li><span class="m">✕</span><span><b>会话行悬停按钮</b>：要挤进官方行布局，和大量既有状态耦合，收益低。</span></li>
+        <li><span class="m">✕</span><span><b>右侧栏标签页</b>：需要接一整套右侧面板的会话生命周期，改造面太大。</span></li>
+        <li><span class="m">✕</span><span><b>输入框工具栏按钮</b>：会改到编辑器内部行为，风险最高。</span></li>
+      </ul>
+    </div>
+    <div class="card" style="border-color:color-mix(in srgb,var(--ok) 30%,transparent)">
+      <b style="color:var(--ok)">✓ 另外还有一处设置页</b>
+      <ul class="ok-list" style="margin-top:9px">
+        <li><span class="m">✓</span><span>技能安装根目录：<code>.agents/skills</code>（默认，与 Claude Code / Codex 共享）或 <code>.dsh/skills</code></span></li>
+        <li><span class="m">✓</span><span>是否显示会话侧环境栏与回答后动作行</span></li>
+        <li><span class="m">✓</span><span>阶段定义与提示词模板可编辑</span></li>
+        <li><span class="m">✓</span><span>一键安装 / 修复 Matt Pocock 技能</span></li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 07 ARCH ══════════ -->
+<section id="arch">
+  <h2>07 · 架构与数据流</h2>
+  <h3>双半身：浏览器管界面，宿主管磁盘</h3>
+  <p class="sub">官方给客户端读文件的能力需要一个会话做作用域，读「还没建会话的项目」会很别扭，所以文件与 git 全部放宿主半身，客户端只通过自己的 HTTP 路由取数据。</p>
+
+  <div class="arch">
+    <div class="abox">
+      <h5>浏览器半身</h5>
+      <div class="sub">plugin/client.js · 手写 · 零构建</div>
+      <ul>
+        <li>注册左侧入口 <code>sidebar.panellist</code>（order −10）</li>
+        <li>注册主面板 <code>main</code> key <code>developer-workbench</code></li>
+        <li>三处会话侧插槽 + 设置页</li>
+        <li>用 react 渲染；用官方组件库（图标/按钮/弹层）</li>
+        <li>取数据：<code>fetch('/api/developer-workbench/*')</code></li>
+        <li>派发：<code>ctx.remote.session.create / prompt</code>、<code>ctx.uiWorkspace.openSession</code></li>
+        <li>工作区与会话实时数据：<code>ctx.remote.workspace.follow(stream)</code></li>
+      </ul>
+    </div>
+    <div class="flowarrow">
+      <span>HTTP</span>
+      <div class="l"></div>
+      <span>JSON</span>
+      <div class="l rev"></div>
+      <span>Remote</span>
+    </div>
+    <div class="abox">
+      <h5>宿主半身</h5>
+      <div class="sub">plugin/index.js · ESM · 零第三方依赖</div>
+      <ul>
+        <li>注册 <code>/api/developer-workbench/*</code> 路由</li>
+        <li>工作区列表（<code>workspaceRegistry</code>）与 git 状态（<code>subprocess</code>）</li>
+        <li>产物扫描：spec / 工单 / ADR / GLOSSARY / 交接文档</li>
+        <li>工单 markdown 解析（Blocked by / Status / 验收项）</li>
+        <li>阶段推导（纯函数，可单测）</li>
+        <li>技能自检与一键安装（内置 27 个技能）</li>
+        <li>状态持久化：profile 下 <code>.developer-workbench/state.json</code></li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="tbl" style="margin-top:20px">
+    <table>
+      <thead><tr><th style="width:290px">路由</th><th style="width:70px">方法</th><th>作用</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">/api/developer-workbench/overview</td><td><span class="chip ok">GET</span></td><td>项目列表（＝工作区）＋ 分支/脏文件/最近提交 ＋ 阶段 ＋ 活跃会话数</td></tr>
+        <tr><td class="mono">/api/developer-workbench/project</td><td><span class="chip ok">GET</span></td><td>单项目详情：产物体检、工单解析结果、技能自检、git 概览</td></tr>
+        <tr><td class="mono">/api/developer-workbench/file</td><td><span class="chip ok">GET</span></td><td>只读文本预览（限长），用于 spec / ADR / 术语表 / 交接文档</td></tr>
+        <tr><td class="mono">/api/developer-workbench/prompt</td><td><span class="chip ok">GET</span></td><td>按项目+阶段+工单生成派发提示词，供界面预览与编辑</td></tr>
+        <tr><td class="mono">/api/developer-workbench/skills/install</td><td><span class="chip wa">POST</span></td><td>把内置技能安装到 <code>.agents/skills</code>（可切 <code>.dsh/skills</code>），幂等</td></tr>
+        <tr><td class="mono">/api/developer-workbench/state</td><td><span class="chip wa">GET/POST</span></td><td>每项目：当前 feature、活跃会话、阶段人工覆盖、tracker 配置</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ══════════ 08 TREE ══════════ -->
+<section id="tree">
+  <h2>08 · 包结构</h2>
+  <h3>一个目录，两个文件就是全部运行时</h3>
+  <p class="sub">你的 profile 里已经把这个包挂上了：bundle 列表、依赖 junction、HMR 监听、数据目录配置项都在。所以补齐包体后大概率<b>不用改 profile</b>。</p>
+
+  <div class="tree">Developer Workbench/
+├── <b>plugin/</b>                        <span class="c">← profile 已 link 到这里</span>
+│   ├── <b>package.json</b>               <span class="c">dsh.bundle.patch + dsh.client 声明</span>
+│   ├── <b>cordis.patch.yml</b>           <span class="c">insert: id=developer-workbench</span>
+│   ├── <b>index.js</b>                   <span class="c">宿主半身（ESM，零依赖）</span>
+│   ├── <b>client.js</b>                  <span class="c">浏览器半身（手写 ModuleLoader bundle）</span>
+│   ├── <span class="n">lib/</span>                       <span class="c">宿主内部模块：扫描 / 解析 / 推导 / 路由</span>
+│   │   ├── routes.js                <span class="c">HTTP 路由装配</span>
+│   │   ├── artifacts.js             <span class="c">产物扫描</span>
+│   │   ├── tickets.js               <span class="c">工单 markdown 解析</span>
+│   │   ├── stage.js                 <span class="c">阶段推导（纯函数）</span>
+│   │   ├── skills.js                <span class="c">技能自检与安装</span>
+│   │   ├── git.js                   <span class="c">git 概览</span>
+│   │   └── prompts.js               <span class="c">派发提示词模板</span>
+│   ├── <span class="n">skills/</span>                    <span class="c">内置 Matt Pocock 技能（MIT + 署名）</span>
+│   │   ├── engineering/*/SKILL.md
+│   │   └── productivity/*/SKILL.md
+│   └── <span class="n">scripts/</span>                   <span class="c">自检脚本（stub React 加载 client + 路由单测）</span>
+├── <span class="n">docs/</span>
+│   ├── design-preview.html          <span class="c">← 本文件</span>
+│   └── design.md                    <span class="c">纯文本版设计说明</span>
+└── README.md                        <span class="c">安装、交互、阶段定义、排障</span></div>
+
+  <div class="callout">
+    <b>为什么零构建很重要：</b>官方插件前端都是预打包产物，第三方要复刻那套还得配 tsdown。但 <code>dsh-our-free-model</code> 证明了<b>手写 ModuleLoader bundle 是官方支持的路径</b>，配合基线只提供 react 的约束，我们可以完全跳过打包工具链 —— 少一层依赖，少一类环境问题。
+  </div>
+</section>
+
+<!-- ══════════ 09 PLAN ══════════ -->
+<section id="plan">
+  <h2>09 · 分期与验收</h2>
+  <h3>六期，每期都能独立验收</h3>
+  <p class="sub">不一次性堆完再调。每期结束都有可点、可看、可复现的产出。</p>
+
+  <div class="tl">
+    <div class="it p0">
+      <div class="pt">P0</div>
+      <div class="bx">
+        <div class="ttl"><b>骨架与接线</b><span class="chip a">先看见</span></div>
+        <p>建包体、profile 接线、验证 HMR 与客户端重载路径，主面板先渲染占位内容。</p>
+        <div class="acc">验收：点开左侧「开发工作台」出现面板，位置在新会话与插件之间，控制台无报错。</div>
+      </div>
+    </div>
+    <div class="it">
+      <div class="pt">P1</div>
+      <div class="bx">
+        <div class="ttl"><b>宿主数据面</b><span class="chip">看不见但关键</span></div>
+        <p>工作区与 git、产物扫描、工单解析、技能自检、阶段推导，全部挂上路由。</p>
+        <div class="acc">验收：对真实项目逐条 curl 出正确 JSON；<b>工单 Blocked by 解析与阶段推导有单测</b>。</div>
+      </div>
+    </div>
+    <div class="it">
+      <div class="pt">P2</div>
+      <div class="bx">
+        <div class="ttl"><b>主面板界面</b><span class="chip">主体</span></div>
+        <p>三栏布局：项目列表、阶段流水线、工单看板、产物预览、技能自检、Git 概览。</p>
+        <div class="acc">验收：真实项目上阶段与看板渲染正确，明暗主题跟随，键盘可达。</div>
+      </div>
+    </div>
+    <div class="it">
+      <div class="pt">P3</div>
+      <div class="bx">
+        <div class="ttl"><b>派发与交接</b><span class="chip vi">核心价值</span></div>
+        <p>派发确认框、创建/复用会话、发送提示词、自动跳转；交接文档列表与接力新会话。</p>
+        <div class="acc">验收：点「下一步」真的建出会话并送达提示词，页面跳到该会话，回来后阶段前进。</div>
+      </div>
+    </div>
+    <div class="it">
+      <div class="pt">P4</div>
+      <div class="bx">
+        <div class="ttl"><b>会话侧入口与设置页</b><span class="chip">打完收口</span></div>
+        <p>输入框下方环境栏、回答后动作行、悬停卡一行，以及设置页全部选项。</p>
+        <div class="acc">验收：环境栏只对已登记项目出现；设置项立即生效；未登记项目下三处均不渲染。</div>
+      </div>
+    </div>
+    <div class="it">
+      <div class="pt">P5</div>
+      <div class="bx">
+        <div class="ttl"><b>打磨与端到端验收</b><span class="chip ok">交付</span></div>
+        <p>中英双语、可访问性、README、自检脚本全绿，在真实项目上跑完整条阶段链。</p>
+        <div class="acc">验收：<code>node scripts/*.mjs</code> 全绿；README 能让人照着复现；整条工作流走通一遍。</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 10 RISK ══════════ -->
+<section id="risk">
+  <h2>10 · 风险与对策</h2>
+  <h3>四个已知风险，都有兜底</h3>
+  <p class="sub">其中第一个是我实测发现的问题，也是唯一一个可能牵动 DSH 内部配置的地方 —— 但我不会让方案吊死在它上面。</p>
+
+  <div class="risk">
+    <div class="rk hi">
+      <span class="lv">已实测</span>
+      <div class="bd">
+        <b>技能发现当前是关闭的</b>
+        <p>我往项目里放了探测技能后用 <code>skill</code> 工具加载，失败；再试官方<b>自带</b>的技能（<code>cordis-plugin-development</code> 等 4 个），同样失败。说明不是路径问题，而是你 desktop profile 里文件系统技能提供方没有激活。</p>
+        <div class="fx"><b>对策：</b>① 派发提示词里永远给出技能的<b>绝对路径</b>，让 agent 直接 <code>read</code> 流程，完全不依赖那个工具；② 工作台的「技能自检」把这件事明说，而不是装作一切正常；③ 如果确认是 profile 层开关，我提供一键修复（改配置前先备份）；若需要改 DSH 内部我会如实告诉你，不硬来。</div>
+      </div>
+    </div>
+    <div class="rk md">
+      <span class="lv">中等</span>
+      <div class="bd">
+        <b>客户端半身的热重载</b>
+        <p>宿主半身已被你的 HMR 监听覆盖；但「无构建」的客户端 bundle 改动后能否免刷新生效，需要实测。</p>
+        <div class="fx"><b>对策：</b>P0 专门验证并记录结论。最坏情况是改前端后手动刷新页面 —— 可接受，且我会在 README 写明。</div>
+      </div>
+    </div>
+    <div class="rk md">
+      <span class="lv">中等</span>
+      <div class="bd">
+        <b>刚创建的目录可能被文件监听漏掉</b>
+        <p>技能目录如果是在会话运行中途才创建，监听器可能挂不上去（Windows 上目录时间戳不总更新）。</p>
+        <div class="fx"><b>对策：</b>安装完成后提示「下个会话生效」，并提供「重新检测」按钮，而不是让你以为是 bug。</div>
+      </div>
+    </div>
+    <div class="rk lo">
+      <span class="lv">低</span>
+      <div class="bd">
+        <b>不碰你的既有项目</b>
+        <p>你要求不参考本地已有项目（如 <code>dsh-graph</code>、<code>dsh-workflow-kernel</code>），我按此执行。</p>
+        <div class="fx"><b>边界：</b>工作台只读写「被绑定项目」的 <code>.agents/skills</code>、<code>.scratch/</code>，以及它自己的状态文件；对项目的写入全部走显式确认。</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 11 EVIDENCE ══════════ -->
+<section id="evidence">
+  <h2>11 · 机制依据</h2>
+  <h3>这些都是从你机器上的实际代码里读出来的</h3>
+  <p class="sub">不是猜的，也不是套用别处经验 —— 每条都对应可查证的来源。</p>
+
+  <div class="tbl">
+    <table>
+      <thead><tr><th style="width:270px">结论</th><th>依据</th></tr></thead>
+      <tbody>
+        <tr><td><b>入口插槽与排序</b></td><td>官方文档原文：「Plugins add an icon component to the root-scoped <code>sidebar.panellist</code> list with an <code>id</code>, optional <code>order</code>…The same id addresses the component registered in the layout's root-scoped <code>main</code> keyed slot」；内置插件页注册 <code>order: 0</code>，外壳按 <code>order</code> 升序排序。侧边栏渲染顺序可从源码逐行确认（品牌 → 新会话 → 面板列表 → 工作区 → 页脚）。</td></tr>
+        <tr><td><b>零构建客户端</b></td><td>所有官方 <code>client.js</code> 首行都是 <code>window.__ModuleLoader__.load({ id, factory })</code>；外壳只种入一张冻结的基线模块表 <code>react / react-dom / react/jsx-runtime / cordis / dsh-client-store / dsh-client-ui-slots / dsh-client-ui-primitives / dsh-client-ui-dockkit</code>。已安装的第三方插件 <code>dsh-our-free-model</code> 就是纯手写、无打包、只依赖 react。</td></tr>
+        <tr><td><b>派发能力</b></td><td><code>SessionController</code> 上带 <code>@Remote</code> 的方法包含 <code>create / prompt / follow / page / rename / cancel</code>；<code>prompt</code> 的请求体是 <code>{ requestId, sessionId, mode: 'queue'|'steer', content }</code>。客户端另有 <code>uiWorkspace.startSession / openSession / connectWorkspace</code>。</td></tr>
+        <tr><td><b>文件读取需要会话作用域</b></td><td><code>workspaceFiles.read</code> 的第一个参数是 <code>WorkspaceFileScope { sessionId, workspaceRoot }</code>，由会话 id 反查。没建会话的项目读起来很别扭 → 因此文件与 git 放宿主半身。</td></tr>
+        <tr><td><b>技能发现根与格式</b></td><td>五个根：<code>&lt;项目&gt;/.dsh/skills</code>(100)、<code>&lt;项目&gt;/.agents/skills</code>(200)、自定义(300)、<code>~/.dsh/skills</code>(400)、<code>~/.agents/skills</code>(500)；项目根取最近的 <code>.git</code> 祖先，没有就用当前目录。格式为 <code>&lt;name&gt;/SKILL.md</code> 或顶层 <code>&lt;name&gt;.md</code>，frontmatter 要求 kebab-case 的 <code>name</code> 与 <code>description</code>。</td></tr>
+        <tr><td><b>技能为何当前不可用</b></td><td>技能注册表在宿主平面，而<b>每个 agent 预设</b>才挂载文件系统提供方与技能工具；web 外壳把宿主平面的这两行显式关掉了。实测：连随包自带的 4 个技能都加载不到，证明该提供方在当前会话作用域内未激活。</td></tr>
+        <tr><td><b>profile 已有接线</b></td><td><code>profiles/desktop/package.json</code> 的 <code>dsh.profile.bundles</code> 已含 <code>dsh-developer-workbench</code>，依赖为 <code>link:…/Developer Workbench/plugin</code>；<code>cordis.patch.yml</code> 已有 <code>id: developer-workbench</code> 的配置项与指向本目录的 HMR 监听；<code>node_modules/dsh-developer-workbench</code> 的 junction 已存在（指向目前为空的 <code>plugin/</code>）。</td></tr>
+        <tr><td><b>Matt Pocock 技能清单</b></td><td>已从仓库读取 27 个声明技能（工程向 20 个、效率向 7 个）：拷问/成稿/拆工单/长程地图/实现/测试优先/评审/提 PR/复盘/排障/领域建模/架构改进/调研/原型/交接等，MIT 许可。</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ══════════ 12 CONFIRM ══════════ -->
+<section id="confirm">
+  <h2>12 · 待确认</h2>
+  <h3>你已经定的四件事</h3>
+  <div class="cards c2" style="margin-bottom:22px">
+    <div class="card">
+      <ul class="ok-list">
+        <li><span class="m">✓</span><span><b>执行模式</b>：控制台 —— 不自己跑 agent，派发到工作区会话</span></li>
+        <li><span class="m">✓</span><span><b>技能供给</b>：装到项目里的技能目录</span></li>
+        <li><span class="m">✓</span><span><b>绑定模型</b>：以 DSH 工作区为准，不另起登记表</span></li>
+        <li><span class="m">✓</span><span><b>v1 范围</b>：八项全要（项目/流水线/看板/产物/派发/技能自检/Git/交接）</span></li>
+      </ul>
+    </div>
+    <div class="card">
+      <ul class="ok-list">
+        <li><span class="m">✓</span><span><b>标识沿用</b>：继续用 <code>dsh-developer-workbench</code> 与 <code>plugin/</code>，允许我改 profile（会先备份）</span></li>
+        <li><span class="m">✓</span><span><b>技能目录</b>：默认 <code>&lt;项目&gt;/.agents/skills</code></span></li>
+        <li><span class="m">✓</span><span><b>版本管理</b>：为本目录建 git 仓库</span></li>
+        <li><span class="m">✓</span><span><b>会话侧</b>：由我定 —— 结论是只加三处（第 06 节）</span></li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="cards c2">
+    <div class="card hl">
+      <span class="ic">▶</span>
+      <b>还差你一句「开工」</b>
+      <p>看完这份设计稿后，如果哪里和你想的不一样，直接说哪一节要改。你说开工我就按 P0 起，先让你在侧边栏看到那个入口。</p>
+    </div>
+    <div class="card">
+      <span class="ic">🔍</span>
+      <b>我开工后的第一件事</b>
+      <p>不是画界面，是把「技能发现为什么关了」查清楚 —— 因为在错误的地基上把界面做漂亮没意义。然后是骨架，让你先看到入口。</p>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <span>开发工作台 · DSH 插件设计方案</span>
+  <span>profile: desktop · DSH 0.2.0-rc.2</span>
+  <span>单文件设计稿，可直接用浏览器打开</span>
+</footer>
+
+</main>
+</div>
+
+<script>
+(function(){
+  var nav=document.getElementById('nav');
+  var links=[].slice.call(nav.querySelectorAll('a'));
+  var secs=links.map(function(a){return document.querySelector(a.getAttribute('href'));});
+  function onScroll(){
+    var y=window.scrollY+140, best=0;
+    for(var i=0;i<secs.length;i++){
+      if(secs[i] && secs[i].offsetTop<=y) best=i;
+    }
+    links.forEach(function(a,i){a.classList.toggle('on', i===best);});
+  }
+  window.addEventListener('scroll',onScroll,{passive:true});
+  onScroll();
+  var tgl=document.getElementById('tgl');
+  tgl.addEventListener('click',function(){
+    var h=document.documentElement;
+    var next=h.getAttribute('data-theme')==='dark'?'light':'dark';
+    h.setAttribute('data-theme',next);
+    tgl.textContent=next==='dark'?'☾ 切换明暗':'☀ 切换明暗';
+  });
+})();
+</script>
+</body>
+</html>
