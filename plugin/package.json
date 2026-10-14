@@ -16,7 +16,9 @@
     "lib",
     "skills",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "ATTRIBUTION.md",
+    "LICENSE-mattpocock-skills"
   ],
   "dsh": {
     "manifestVersion": 1,

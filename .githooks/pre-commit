@@ -1,0 +1,19 @@
+#!/bin/sh
+# The hermetic half only: the client suite needs no running DSH, so it can run on
+# every commit. The full suite (`npm run verify`) and the end-to-end walk
+# (`npm run acceptance`) both need a server, so they stay manual.
+#
+# Installed by: git config core.hooksPath .githooks
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "pre-commit: node is not on PATH — the check did NOT run." >&2
+  echo "            Run it manually: npm run check" >&2
+  exit 0
+fi
+
+if ! node plugin/scripts/verify.mjs --client-only; then
+  echo "" >&2
+  echo "pre-commit: plugin/scripts/verify.mjs --client-only FAILED." >&2
+  echo "            Fix it, or bypass once with: git commit --no-verify" >&2
+  exit 1
+fi

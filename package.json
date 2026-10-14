@@ -1,0 +1,11 @@
+{
+  "name": "dsh-developer-workbench-workspace",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Workspace scripts for the Developer Workbench DSH plugin. The plugin itself has no dependencies and needs no build.",
+  "scripts": {
+    "check": "node plugin/scripts/verify.mjs --client-only",
+    "verify": "node plugin/scripts/verify.mjs",
+    "acceptance": "node plugin/scripts/acceptance.mjs"
+  }
+}

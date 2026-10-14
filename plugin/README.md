@@ -43,17 +43,39 @@
 ## 验证
 
 ```bash
-node plugin/scripts/verify.mjs
+npm run check        # 浏览器半身，密封，不需要服务（pre-commit 钩子跑的就是这条）
+npm run verify       # 加上宿主 HTTP 路由，需要 DSH 在跑
+npm run acceptance   # 一个项目走完整条阶段阶梯，需要 DSH 在跑
 ```
 
-两条缝，都不需要浏览器：
+**`verify.mjs` 的两条缝**，都不需要浏览器：
 
-1. **浏览器半身**：用桩 `window` 与桩 React 加载 `client.js`，物化 factory、对假 ctx 跑 `apply`，断言**注册项**（插槽名、id、`order`、locale）与**渲染结果**（纯组件 + 桩渲染）。
-2. **宿主半身**：对着脚本自己创建的真实目录断言 HTTP 接口 —— 真实 git 仓库、真实的 tracker 声明文件、真实的工单文件。
+1. **浏览器半身**：用桩 `window` 与桩 React 加载 `client.js`，物化 factory、对假 ctx 跑 `apply`，断言**注册项**（插槽名、id、`order`、locale）与**渲染结果**（纯组件 + 桩渲染）。其中两条审计遍历每个渲染树：**可点击元素是否键盘可达**、**颜色是否全是主题 token**。
+2. **宿主半身**：对着脚本自己创建的真实目录断言 HTTP 接口 —— 真实 git 仓库、真实的 tracker 声明文件、真实的工单文件。一次预检决定可达性：**可达服务器抛出的异常是 FAIL，不是 skip**。
 
-`node plugin/scripts/verify.mjs --client-only` 只跑客户端部分；服务未启动时宿主部分会明确跳过。
+**`acceptance.mjs` 测的是逐路由断言测不到的东西**：同一个项目在产物逐件增加时，阶段是否真的自己往前走。
 
-**每改必跑**：改完不跑等于没改。
+```
+→ grill      a tracker declaration        (nothing-sharpened)
+→ spec       an ADR                       (design-docs-only)
+→ tickets    a spec                       (spec-without-tickets)
+→ implement  the first ticket             (tickets-open)
+→ review     every ticket finished        (no-review)
+```
+
+它也会**如实报告链路在哪里停下**（见「已知问题」），而不是假装走完了。
+
+**每改必跑**：改完不跑等于没改 —— 结构上由 `.githooks/pre-commit` 兜底（`git config core.hooksPath .githooks`）。
+
+## 文档地图
+
+| 文件 | 读它的时机 |
+|---|---|
+| `plugin/README.md`（本文） | 改代码前 |
+| [`CODING_STANDARDS.md`](./CODING_STANDARDS.md) | **评审时**。机械性规则已变成检查，评审可跳过那些 |
+| [`docs/slots.md`](../docs/slots.md) | 涉及插槽时。**不要再去查询插槽契约** |
+| [`docs/reviews/`](../docs/reviews/) | 两轴评审报告与复盘 |
+| [`AGENTS.md`](../AGENTS.md) | 导航指针与那条硬约束 |
 
 ## 从零复现
 

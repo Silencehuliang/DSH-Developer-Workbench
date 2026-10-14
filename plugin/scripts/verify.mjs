@@ -807,6 +807,67 @@ check('styles: the audit really walked rendered trees, not an empty list', rende
 const literalColours = renderedColours.filter((value) => /#[0-9a-fA-F]{3,8}\b/.test(value) || /rgb\(|rgba\(|hsl\(/i.test(value))
 check('styles: no component renders a hardcoded colour', literalColours.length === 0, literalColours.slice(0, 3).join(' | '))
 
+/** Host elements a keyboard can actually reach. */
+const INTERACTIVE_HOSTS = new Set(['button', 'a', 'input', 'select', 'textarea', 'summary', 'option'])
+
+/**
+ * Find every element that handles a click but cannot be reached by keyboard.
+ *
+ * This is the deterministic check for the defect class that produced the
+ * mouse-only project row: a `div` with `onClick` looks identical in a text
+ * assertion and is invisible to a colour audit. Mechanical violations get a
+ * check, not a rule.
+ *
+ * @param node - an element returned by the stub `createElement`.
+ * @returns one description per violation.
+ */
+function keyboardViolations(node) {
+  const found = []
+  const walk = (current) => {
+    if (current === null || current === undefined || typeof current === 'boolean') return
+    if (typeof current === 'string' || typeof current === 'number') return
+    if (Array.isArray(current)) {
+      for (const child of current) walk(child)
+      return
+    }
+    if (typeof current.type === 'function') {
+      const props = { ...(current.props ?? {}) }
+      if (props.children === undefined && current.children !== undefined) props.children = current.children
+      walk(current.type(props))
+      return
+    }
+    if (typeof current.type === 'string' && typeof current.props?.onClick === 'function' && !INTERACTIVE_HOSTS.has(current.type)) {
+      found.push(`<${current.type} class="${String(current.props.className ?? '')}">`)
+    }
+    walk(current.props?.children !== undefined ? current.props.children : current.children)
+  }
+  walk(node)
+  return found
+}
+
+const keyboardAuditTrees = [
+  seam.ProjectList({ projects: [boundProject], t: zhT, onSelect: () => {}, onUnbind: () => {} }),
+  seam.ProjectRow({ project: boundProject, t: zhT, onSelect: () => {}, onUnbind: () => {} }),
+  seam.SessionProjectBar({ project: boundProject, stage: 'implement', t: zhT, onAdvance: () => {} }),
+  seam.TurnTailActions({ project: boundProject, t: zhT, onRecord: () => {}, onAdvance: () => {}, onHandoff: () => {} }),
+  seam.ArtifactGroups({ scan: handoffScan, t: zhT, onOpen: () => {}, onResume: () => {} }),
+  seam.TicketBoard({ board: boardFixture, t: zhT }),
+  seam.StagePipeline({ stage: stageFixture, t: zhT, onOverride: () => {}, onDispatch: () => {}, onHandoff: () => {} }),
+  seam.SettingsSection({ settings: seam.SETTINGS_FALLBACK, t: zhT, onChange: () => {} }),
+  seam.DispatchDialog(dispatchProps),
+]
+const keyboardFindings = keyboardAuditTrees.flatMap(keyboardViolations)
+check('accessibility: no clickable element is unreachable from the keyboard', keyboardFindings.length === 0, keyboardFindings.slice(0, 3).join(' | '))
+// A vacuous pass would be worse than none: the audit must have walked real trees.
+check('accessibility: the audit really walked rendered trees', keyboardAuditTrees.every((tree) => tree !== null && tree !== undefined))
+
+// Packaging: MIT attribution has to travel with the content it covers, or the
+// package ships someone else's work without its licence.
+const packageManifest = JSON.parse(fs.readFileSync(path.join(PLUGIN_DIR, 'package.json'), 'utf8'))
+const shippedFiles = Array.isArray(packageManifest.files) ? packageManifest.files : []
+check('packaging: the attribution files ship with the package', shippedFiles.includes('ATTRIBUTION.md') && shippedFiles.includes('LICENSE-mattpocock-skills'), JSON.stringify(shippedFiles))
+check('packaging: the bundled skills ship too', shippedFiles.includes('skills'))
+
 // Both dictionaries must define the same keys, or one language renders raw keys.
 const zhKeys = Object.keys(seam.dicts.zh).sort()
 const enKeys = Object.keys(seam.dicts.en).sort()
