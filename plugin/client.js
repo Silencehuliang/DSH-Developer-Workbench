@@ -116,6 +116,14 @@ window.__ModuleLoader__.load({
       sessionFocusRecord: '会话请求：把「{title}」记到工作台',
       sessionFocusHint: '请在下面的流水线上按「派发」确认要发送的内容 —— 工作台不会替你发送。',
       sessionFocusDismiss: '知道了',
+      actionHandoff: '生成交接文档',
+      actionResume: '继续这个交接',
+      handoffMissing: '文件不见了',
+      handoffHint: '交接文档按上游 handoff 技能的约定写在系统临时目录里（不是工作区）。工作台会记住路径，所以「继续这个交接」能直接接上。',
+      handoffPlanned: '将写入：{path}',
+      dispatchHandoff: '交接文档',
+      dispatchHandoffNew: '这次派发会把它写到上面这个路径 —— 系统临时目录，不是工作区。',
+      dispatchHandoffResume: '将读取这份已有文档，按它列出的 suggested skills 继续。',
       board: '工单看板',
       boardNeedsTracker: '这个项目的 tracker 还没定。先绑定项目并选择 tracker，看板才有东西可读。',
       boardUnsupported: '还没有 {kind} tracker 的适配器，所以这里不显示任何工单。',
@@ -238,6 +246,14 @@ window.__ModuleLoader__.load({
       sessionFocusRecord: 'From a session: record {title} in the workbench',
       sessionFocusHint: 'Press Dispatch on the pipeline below to confirm what gets sent — the workbench will not send it for you.',
       sessionFocusDismiss: 'Got it',
+      actionHandoff: 'Write a handoff',
+      actionResume: 'Resume this handoff',
+      handoffMissing: 'file is gone',
+      handoffHint: 'Handoff documents live in the OS temp directory by the upstream skill\u2019s design, not in the workspace. The workbench remembers the path, which is what makes "resume this handoff" possible.',
+      handoffPlanned: 'will be written to: {path}',
+      dispatchHandoff: 'Handoff document',
+      dispatchHandoffNew: 'This dispatch will write it to the path above — the OS temp directory, not the workspace.',
+      dispatchHandoffResume: 'It will read this existing document and continue from the skills it suggests.',
       board: 'Ticket board',
       boardNeedsTracker: 'This project has no tracker yet. Bind it and pick a tracker before the board can read anything.',
       boardUnsupported: 'There is no adapter for a {kind} tracker yet, so no tickets are shown.',
@@ -837,7 +853,7 @@ window.__ModuleLoader__.load({
 
     /** The right column's artifact list, grouped the way the host grouped them. */
     function ArtifactGroups(props) {
-      const { scan, t, selectedPath, onOpen } = props
+      const { scan, t, selectedPath, onOpen, onResume } = props
       if (scan === null || scan === undefined) {
         return h('p', { style: S.muted }, t('artifactsLoading'))
       }
@@ -873,6 +889,23 @@ window.__ModuleLoader__.load({
                 },
                 h('span', { style: S.artifactName }, item.name),
                 h('span', { style: S.artifactMeta }, `${formatBytes(item.bytes)} · ${formatWhen(item.mtime)}`),
+                // Only a handoff can be resumed, and only while it is still there.
+                item.kind === 'handoff' && typeof onResume === 'function'
+                  ? h(
+                      'button',
+                      {
+                        key: 'resume',
+                        type: 'button',
+                        className: 'dw-resume',
+                        style: { ...S.button, padding: '1px 7px', fontSize: 10.5 },
+                        onClick: (event) => {
+                          if (typeof event?.stopPropagation === 'function') event.stopPropagation()
+                          onResume(item)
+                        },
+                      },
+                      t('actionResume'),
+                    )
+                  : null,
               ),
             ),
           ),
@@ -1083,7 +1116,7 @@ window.__ModuleLoader__.load({
      * plus the pin, which always shows the derivation it is overriding.
      */
     function StagePipeline(props) {
-      const { stage, t, onOverride, onClearOverride, onDispatch } = props
+      const { stage, t, onOverride, onClearOverride, onDispatch, onHandoff } = props
       if (stage === null || stage === undefined) return h('p', { style: S.muted }, t('loading'))
 
       const steps = Array.isArray(stage.stages) ? stage.stages : []
@@ -1134,18 +1167,27 @@ window.__ModuleLoader__.load({
           ? currentEntry.skill
           : `${currentEntry.skill} / ${currentEntry.alternative}`
         rows.push(h('div', { key: 'skill', style: { ...S.muted, marginTop: 8, fontSize: 11.6 } }, t('stageSkill', { skill })))
-        if (typeof onDispatch === 'function') {
-          rows.push(
-            h(
-              'div',
-              { key: 'dispatch', style: { marginTop: 10 } },
+        if (typeof onDispatch === 'function' || typeof onHandoff === 'function') {
+          const actions = []
+          if (typeof onDispatch === 'function') {
+            actions.push(
               h(
                 'button',
-                { type: 'button', className: 'dw-dispatch-open', style: S.buttonPrimary, onClick: () => onDispatch(current) },
+                { key: 'dispatch', type: 'button', className: 'dw-dispatch-open', style: S.buttonPrimary, onClick: () => onDispatch(current) },
                 `${t('dispatch')} · ${currentEntry.skill}`,
               ),
-            ),
-          )
+            )
+          }
+          if (typeof onHandoff === 'function') {
+            actions.push(
+              h(
+                'button',
+                { key: 'handoff', type: 'button', className: 'dw-handoff-open', style: S.button, onClick: () => onHandoff() },
+                t('actionHandoff'),
+              ),
+            )
+          }
+          rows.push(h('div', { key: 'dispatch', style: { marginTop: 10, display: 'flex', gap: 6, flexWrap: 'wrap' } }, actions))
         }
       }
 
@@ -1204,7 +1246,7 @@ window.__ModuleLoader__.load({
 
     /** The middle column: heading, then the stage pipeline. */
     function StagePanel(props) {
-      const { t, project, stage, onOverride, onClearOverride, onDispatch } = props
+      const { t, project, stage, onOverride, onClearOverride, onDispatch, onHandoff } = props
       return h(
         'div',
         { className: 'dw-stage' },
@@ -1212,7 +1254,7 @@ window.__ModuleLoader__.load({
         h('p', { style: S.lead }, t('subtitle')),
         project === null || project === undefined
           ? h('p', { style: S.muted }, t('stageUnknown'))
-          : h(StagePipeline, { stage, t, onOverride, onClearOverride, onDispatch }),
+          : h(StagePipeline, { stage, t, onOverride, onClearOverride, onDispatch, onHandoff }),
       )
     }
 
@@ -1444,6 +1486,7 @@ window.__ModuleLoader__.load({
       const targets = prompt.targets ?? {}
       const project = targets.project ?? {}
       const ticket = targets.ticket ?? null
+      const handoff = targets.handoff ?? null
       const rows = []
 
       rows.push(
@@ -1472,6 +1515,18 @@ window.__ModuleLoader__.load({
             { key: 'ticket', style: { marginBottom: 10 } },
             h('div', { style: { ...S.muted, fontSize: 10.5 } }, t('dispatchTicket')),
             h('div', { style: { fontSize: 12.4 } }, `#${ticket.id} ${ticket.title}`),
+          ),
+        )
+      }
+
+      if (handoff !== null) {
+        rows.push(
+          h(
+            'div',
+            { key: 'handoff', style: { marginBottom: 10 } },
+            h('div', { style: { ...S.muted, fontSize: 10.5 } }, t('dispatchHandoff')),
+            h('div', { style: { ...S.mono, fontSize: 11, wordBreak: 'break-all' } }, handoff.path),
+            h('div', { style: { ...S.muted, fontSize: 10.5, marginTop: 3 } }, handoff.exists === true ? t('dispatchHandoffResume') : t('dispatchHandoffNew')),
           ),
         )
       }
@@ -1896,13 +1951,17 @@ window.__ModuleLoader__.load({
       }, [activePath, props, reload])
 
       /** Ask the host what this step would say, then show it before sending it. */
-      const openDispatch = useCallback(async (stageId) => {
+      const openDispatch = useCallback(async (stageId, options = {}) => {
         if (activePath === null) return
         setDispatchError(null)
         setDispatchNotice(null)
         setDispatchBusy(true)
         try {
-          const built = await getJson(`${ROUTE_BASE}/prompt?path=${encodeURIComponent(activePath)}&stage=${encodeURIComponent(stageId)}`)
+          let url = `${ROUTE_BASE}/prompt?path=${encodeURIComponent(activePath)}&stage=${encodeURIComponent(stageId)}`
+          if (typeof options.handoff === 'string' && options.handoff.length > 0) {
+            url += `&handoff=${encodeURIComponent(options.handoff)}`
+          }
+          const built = await getJson(url)
           setDispatchRequest(built)
           setDispatchDraft(built.text)
           setDispatchChoice('new')
@@ -1939,11 +1998,19 @@ window.__ModuleLoader__.load({
         setDispatchError(null)
         setDispatchNotice(null)
         try {
-          await performDispatch(props, {
+          const sentTo = await performDispatch(props, {
             text,
             choice,
             project: dispatchRequest.targets?.project ?? {},
           })
+          // Record the handoff when it is dispatched, not when it shows up on disk:
+          // the workbench chose the path, so it already knows it — and a record
+          // whose file is missing is a far better failure than a handoff nobody
+          // can find again.
+          const handoff = dispatchRequest.targets?.handoff ?? null
+          if (dispatchRequest.stage === 'handoff' && handoff !== null && typeof props.recordHandoff === 'function') {
+            await props.recordHandoff(dispatchRequest.targets.project.path, handoff.path, sentTo)
+          }
           setDispatchRequest(null)
           reload()
         } catch (nextError) {
@@ -1963,6 +2030,19 @@ window.__ModuleLoader__.load({
           setDispatchError(nextError?.message ?? String(nextError))
         }
       }, [props, t])
+
+      // A session-side action opens the confirmation for what it asked for. The
+      // intent object carries its own `handled` mark, so a later re-render cannot
+      // open the same dialog twice.
+      useEffect(() => {
+        if (focus === null || focus.handled === true) return
+        focus.handled = true
+        if (focus.kind === 'handoff') {
+          openDispatch('handoff')
+        } else if (focus.kind === 'advance' && typeof stageInfo?.stage === 'string') {
+          openDispatch(stageInfo.stage)
+        }
+      }, [focus, stageInfo, openDispatch])
 
       const onBind = useCallback(async () => {
         if (typeof props?.pickDirectory !== 'function') return
@@ -2071,6 +2151,7 @@ window.__ModuleLoader__.load({
                     onOverride: overrideStage,
                     onClearOverride: clearStageOverride,
                     onDispatch: openDispatch,
+                    onHandoff: () => openDispatch('handoff'),
                   }),
                   h(TicketBoard, { board, t }),
                 )
@@ -2086,7 +2167,7 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { style: S.colLast },
-            h(ArtifactGroups, { scan: artifacts, t, selectedPath: preview?.item?.path ?? null, onOpen: openArtifact }),
+            h(ArtifactGroups, { scan: artifacts, t, selectedPath: preview?.item?.path ?? null, onOpen: openArtifact, onResume: (item) => openDispatch('resume', { handoff: item.path }) }),
             h(SkillGrid, { status: skillStatus, t }),
           ),
         ),
@@ -2153,6 +2234,8 @@ window.__ModuleLoader__.load({
               setProjectTracker: (projectPath, kind) => postJson(`${ROUTE_BASE}/projects/tracker`, { path: projectPath, kind }),
               unbindProject: (projectPath) => postJson(`${ROUTE_BASE}/projects/unbind`, { path: projectPath }),
               setStageOverride: (projectPath, stageId) => postJson(`${ROUTE_BASE}/projects/stage`, { path: projectPath, stage: stageId }),
+              recordHandoff: (projectPath, handoffPath, sessionId) =>
+                postJson(`${ROUTE_BASE}/projects/handoff`, { path: projectPath, handoffPath, sessionId }),
               // Dispatch is the one place the workbench writes into a session, so
               // every step is explicit and every failure is surfaced.
               createSession: async (project) => {

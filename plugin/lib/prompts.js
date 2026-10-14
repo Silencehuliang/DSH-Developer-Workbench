@@ -64,7 +64,27 @@ const STAGE_TASKS = {
     task: '对这次会话做复盘：流程哪里顺、哪里卡。',
     report: '做得好的、值得改的、以及下一步建议。',
   },
+  handoff: {
+    task: '把当前会话压缩成交接文档，写到下面给出的那个路径。只**引用**已有产物（spec、工单、ADR、提交、diff）的路径，不要重复它们的内容；文档里要有一节「suggested skills」，列出下一个 agent 该调用哪些技能。敏感信息（密钥、密码、个人信息）要脱敏。',
+    report: '写好的交接文档路径，以及你建议下一个会话先做什么。',
+  },
+  resume: {
+    task: '读取下面那份交接文档，按它的内容继续那次工作。如果它列了 suggested skills，先加载对应技能再动手。',
+    report: '你从哪里接上、做了什么、以及还剩什么。',
+  },
 }
+
+/**
+ * Dispatchable actions that are not pipeline stages.
+ *
+ * `handoff` is cross-cutting by design: it can be run from any stage, which is
+ * why it cannot be a step in the pipeline. `resume` has no skill of its own —
+ * it reads a previous handoff and follows whatever that document suggests.
+ */
+export const DISPATCH_ACTIONS = [
+  { id: 'handoff', skill: 'handoff', requiresHandoff: false },
+  { id: 'resume', skill: null, requiresHandoff: true },
+]
 
 /**
  * How the tracker is actually operated, per kind.
@@ -153,20 +173,26 @@ export function buildDispatchPrompt({
   project,
   ticket = null,
   triageLabels = DEFAULT_TRIAGE_LABELS,
+  handoffPath = null,
 }) {
   const tasks = STAGE_TASKS[stage.id] ?? { task: `执行 ${stage.id} 这一步。`, report: '结果与遇到的问题。' }
-  const skillPath = path.join(skillsDir, stage.skill, 'SKILL.md').split(path.sep).join('/')
-  const alternativePath = stage.alternative === undefined
+  const hasSkill = typeof stage.skill === 'string' && stage.skill.length > 0
+  const skillPath = hasSkill ? path.join(skillsDir, stage.skill, 'SKILL.md').split(path.sep).join('/') : null
+  const alternativePath = !hasSkill || stage.alternative === undefined
     ? null
     : path.join(skillsDir, stage.alternative, 'SKILL.md').split(path.sep).join('/')
 
   const lines = []
-  lines.push(`请先读取并严格遵循这个文件里的流程：${skillPath}`)
-  lines.push(
-    `（如果 \`skill\` 工具能加载 "${stage.skill}"，优先用它。这些技能里有一部分设置了 disable-model-invocation，工具读不到；那就直接读上面那个文件，效果一样。）`,
-  )
-  if (alternativePath !== null) {
-    lines.push(`需要时可以参考同一目录下的 \`${stage.alternative}\`：${alternativePath}`)
+  if (hasSkill) {
+    lines.push(`请先读取并严格遵循这个文件里的流程：${skillPath}`)
+    lines.push(
+      `（如果 \`skill\` 工具能加载 "${stage.skill}"，优先用它。这些技能里有一部分设置了 disable-model-invocation，工具读不到；那就直接读上面那个文件，效果一样。）`,
+    )
+    if (alternativePath !== null) {
+      lines.push(`需要时可以参考同一目录下的 \`${stage.alternative}\`：${alternativePath}`)
+    }
+  } else {
+    lines.push('这次不需要先加载某个技能 —— 按下面的任务做；需要时再加载交接文档里建议的技能。')
   }
   lines.push('')
   lines.push(`项目：${project.title}`)
@@ -186,21 +212,43 @@ export function buildDispatchPrompt({
     }
     lines.push('')
   }
+  if (handoffPath !== null) {
+    lines.push(`交接文档：${handoffPath.split(path.sep).join('/')}`)
+    if (stage.id === 'handoff') {
+      lines.push('（这是系统临时目录里的路径，不是工作区 —— 上游 handoff 技能就要求写在那里。工作台会记住这个路径，所以请**严格写到它**，不要另起文件名。）')
+    } else {
+      lines.push('（如果这个文件已经不存在，说明它被删除或移动过 —— 先告诉用户，不要凭空继续。）')
+    }
+    lines.push('')
+  }
   lines.push(`任务：${tasks.task}`)
   lines.push('')
   lines.push(`完成时请回报：${tasks.report}`)
 
   return {
     stage: stage.id,
-    skill: stage.skill,
+    skill: stage.skill ?? null,
     skillPath,
     alternative: stage.alternative ?? null,
     alternativePath,
+    handoffPath,
     /** What the confirm dialog shows as the subject line. */
-    subject: `${stage.id} · ${stage.skill}`,
+    subject: `${stage.id} · ${stage.skill ?? 'no skill'}`,
     text: lines.join('\n'),
   }
 }
 
-/** Stage ids this module can build a prompt for. */
-export const PROMPT_STAGES = STAGES.map((entry) => entry.id)
+/** Every dispatchable id: the pipeline steps plus the cross-cutting actions. */
+export const PROMPT_STAGES = [
+  ...STAGES.map((entry) => entry.id),
+  ...DISPATCH_ACTIONS.map((entry) => entry.id),
+]
+
+/**
+ * Resolve a dispatchable id.
+ * @param id - a pipeline stage id or a dispatch action id.
+ * @returns the entry to build a prompt for, or undefined.
+ */
+export function findDispatchable(id) {
+  return STAGES.find((entry) => entry.id === id) ?? DISPATCH_ACTIONS.find((entry) => entry.id === id)
+}

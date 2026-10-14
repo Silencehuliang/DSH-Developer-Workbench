@@ -38,7 +38,8 @@ import {
   readGitHubTickets,
 } from '../lib/tickets.js'
 import { STAGES, deriveStage } from '../lib/stage.js'
-import { DEFAULT_TRIAGE_LABELS, buildDispatchPrompt, readTriageLabels } from '../lib/prompts.js'
+import { PROMPT_STAGES, DEFAULT_TRIAGE_LABELS, buildDispatchPrompt, readTriageLabels } from '../lib/prompts.js'
+import { nextHandoffPath, projectSlug } from '../lib/handoffs.js'
 import { readSkillInventory, reconcileSkills } from '../lib/skills.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -673,6 +674,37 @@ try {
 unsubBroken()
 check('focus intent: a broken listener cannot break the click', survived === true)
 
+// Handoff surfaces: generate, resume, and the negatives that keep them honest.
+const pipelineWithHandoff = renderText(seam.StagePipeline({ stage: stageFixture, t: zhT, onOverride: () => {}, onDispatch: () => {}, onHandoff: () => {} })).join(' | ')
+check('pipeline: offers the cross-cutting handoff action beside dispatch', pipelineWithHandoff.includes('派发 · implement') && pipelineWithHandoff.includes('生成交接文档'), pipelineWithHandoff.slice(0, 220))
+
+const handoffScan = {
+  groups: [
+    { id: 'handoff', label: 'Handoffs', items: [{ name: 'handoff-1.md', path: '/tmp/h/handoff-1.md', kind: 'handoff', bytes: 100, mtime: '2026-10-14T06:00:00.000Z' }] },
+    { id: 'spec', label: 'Specs and plans', items: [{ name: '.scratch/feat/spec.md', path: '/tmp/h/spec.md', kind: 'spec', bytes: 10, mtime: '2026-10-14T06:00:00.000Z' }] },
+  ],
+}
+const handoffListText = renderText(seam.ArtifactGroups({ scan: handoffScan, t: zhT, onOpen: () => {}, onResume: () => {} })).join(' | ')
+check('artifact list: a handoff offers resuming', handoffListText.includes('继续这个交接'))
+check('artifact list: only handoffs offer resuming, not every document', (handoffListText.match(/继续这个交接/g) ?? []).length === 1, handoffListText)
+check('artifact list: no resume control when the container offers none', renderText(seam.ArtifactGroups({ scan: handoffScan, t: zhT, onOpen: () => {} })).join(' | ').includes('继续这个交接') === false)
+
+const handoffDialogText = renderText(
+  seam.DispatchDialog({
+    ...dispatchProps,
+    prompt: { ...dispatchPromptFixture, stage: 'handoff', skill: 'handoff', targets: { ...dispatchPromptFixture.targets, ticket: null, handoff: { path: '/tmp/h/handoff-2.md', exists: false } } },
+  }),
+).join(' | ')
+check('dispatch: a handoff dispatch shows the exact path it will write', handoffDialogText.includes('/tmp/h/handoff-2.md'))
+check('dispatch: a new handoff says it goes to temp, not the workspace', handoffDialogText.includes('不是工作区'))
+const resumeDialogText = renderText(
+  seam.DispatchDialog({
+    ...dispatchProps,
+    prompt: { ...dispatchPromptFixture, stage: 'resume', skill: null, targets: { ...dispatchPromptFixture.targets, ticket: null, handoff: { path: '/tmp/h/handoff-2.md', exists: true } } },
+  }),
+).join(' | ')
+check('dispatch: resuming says it will read the existing document', resumeDialogText.includes('suggested skills'))
+
 // Both dictionaries must define the same keys, or one language renders raw keys.
 const zhKeys = Object.keys(seam.dicts.zh).sort()
 const enKeys = Object.keys(seam.dicts.en).sort()
@@ -964,6 +996,41 @@ check('self-check: a flat .md without frontmatter is reported, not ignored', fla
 check('self-check: a well-formed directory skill is accepted', flatInventory.some((row) => row.name === 'good-skill' && row.problems.length === 0))
 check('self-check: a CRLF directory skill is classified correctly', readSkillInventory(path.join(PLUGIN_DIR, 'skills')).find((row) => row.name === 'handoff')?.modelInvocable === false)
 fs.rmSync(flatFixture, { recursive: true, force: true })
+
+// ── 1g. handoffs: the path the workbench must choose itself ──────────────────
+
+console.log('\nhandoffs (hermetic)')
+
+const handoffWhen = new Date(2026, 9, 14, 15, 30, 5)
+const expectedHandoff = path.join('/tmp', 'developer-workbench', 'demo', 'handoff-20261014-153005.md')
+check('handoff path: lives in the OS temp directory, never the workspace', nextHandoffPath('/tmp/demo', handoffWhen, '/tmp').startsWith(path.join('/tmp', 'developer-workbench')))
+check('handoff path: is deterministic and timestamped', nextHandoffPath('/tmp/demo', handoffWhen, '/tmp') === expectedHandoff, nextHandoffPath('/tmp/demo', handoffWhen, '/tmp'))
+check('handoff path: a folder name with punctuation gets a safe slug', projectSlug('/tmp/My Project!') === 'my-project', projectSlug('/tmp/My Project!'))
+check('handoff path: a root with no usable name still gets one', projectSlug('/') === 'project', projectSlug('/'))
+
+const handoffPrompt = buildDispatchPrompt({
+  stage: { id: 'handoff', skill: 'handoff' },
+  skillsDir: BUNDLED_SKILLS,
+  tracker: null,
+  project: { title: 'D', path: '/tmp/d' },
+  handoffPath: '/tmp/handoff-1.md',
+})
+check('handoff prompt: carries the skill path and the exact output path', handoffPrompt.text.includes(asPosix(handoffPrompt.skillPath)) && handoffPrompt.text.includes('/tmp/handoff-1.md'), handoffPrompt.skillPath)
+check('handoff prompt: says not to invent a different file name', handoffPrompt.text.includes('严格写到它'))
+check('handoff prompt: states that the document belongs in temp, not the workspace', handoffPrompt.text.includes('系统临时目录'))
+
+const resumePrompt = buildDispatchPrompt({
+  stage: { id: 'resume', skill: null },
+  skillsDir: BUNDLED_SKILLS,
+  tracker: null,
+  project: { title: 'D', path: '/tmp/d' },
+  handoffPath: '/tmp/handoff-1.md',
+})
+check('resume prompt: needs no skill of its own', resumePrompt.skillPath === null && resumePrompt.text.includes('不需要先加载某个技能'))
+check('resume prompt: points at the handoff document', resumePrompt.text.includes('/tmp/handoff-1.md'))
+check('resume prompt: tells the agent to follow the document\u2019s suggested skills', resumePrompt.text.includes('suggested skills'))
+check('resume prompt: a missing document is called out rather than glossed over', resumePrompt.text.includes('已经不存在'))
+check('dispatch ids: handoff and resume are dispatchable without being pipeline stages', PROMPT_STAGES.includes('handoff') && PROMPT_STAGES.includes('resume') && !STAGES.some((entry) => entry.id === 'handoff'))
 
 // ── 2. host routes ────────────────────────────────────────────────────────────
 
@@ -1329,6 +1396,43 @@ if (CLIENT_ONLY) {
     check('prompt route: an unknown stage is a 400', badStage.status === 400, `HTTP ${badStage.status}`)
     const noStage = await fetch(`${BASE}/api/developer-workbench/prompt?path=${encodeURIComponent(stageProject)}`)
     check('prompt route: a missing stage is a 400', noStage.status === 400, `HTTP ${noStage.status}`)
+
+    // ── handoffs: generate, record, list, resume, forget ─────────────────────
+    const handoffProject = tempDir('dsh-wb-handoff-')
+    writeDeclaration(handoffProject, 'Local markdown')
+
+    const handoffLive = await getJson(promptUrl(handoffProject, 'handoff'))
+    const handoffTarget = handoffLive.targets?.handoff ?? null
+    check('handoff route: names an absolute path inside the temp directory', typeof handoffTarget?.path === 'string' && path.isAbsolute(handoffTarget.path) && handoffTarget.path.startsWith(os.tmpdir()), String(handoffTarget?.path))
+    check('handoff route: nothing is written yet, so exists is false', handoffTarget?.exists === false)
+    check('handoff route: the prompt quotes that exact path', handoffLive.text.includes(asPosix(handoffTarget.path)))
+    // The workbench chose the name, which is the only reason the list can find it later.
+    check('handoff route: the name is one the workbench can recognise', /handoff-\d{8}-\d{6}\.md$/.test(handoffTarget.path), handoffTarget.path)
+
+    const handoffFile = handoffTarget.path
+    fs.mkdirSync(path.dirname(handoffFile), { recursive: true })
+    fs.writeFileSync(handoffFile, '# Handoff\n\nnext steps\n', 'utf8')
+
+    const recorded = await postJson('/api/developer-workbench/projects/handoff', { path: handoffProject, handoffPath: handoffFile, sessionId: 'session-x' })
+    check('handoff record: is accepted and echoed back', recorded.status === 200 && recorded.body.handoffs.some((row) => row.path === handoffFile), `HTTP ${recorded.status}`)
+
+    const withHandoff = await getJson(`/api/developer-workbench/artifacts?path=${encodeURIComponent(handoffProject)}`)
+    const handoffGroup = withHandoff.groups.find((group) => group.id === 'handoff')
+    check('handoff record: appears in the artifact list under its own group', handoffGroup !== undefined && handoffGroup.items.some((item) => item.path === handoffFile), JSON.stringify(withHandoff.groups.map((group) => group.id)))
+    check('handoff record: the list entry carries its size and time', typeof handoffGroup.items[0].bytes === 'number' && typeof handoffGroup.items[0].mtime === 'string')
+
+    const resumeLive = await getJson(`${promptUrl(handoffProject, 'resume')}&handoff=${encodeURIComponent(handoffFile)}`)
+    check('handoff resume: an existing document is reported present', resumeLive.targets?.handoff?.exists === true)
+    check('handoff resume: the prompt quotes the document path', resumeLive.text.includes(asPosix(handoffFile)))
+    const gonePath = path.join(os.tmpdir(), 'dsh-wb-gone-9f3a.md')
+    const resumeMissing = await getJson(`${promptUrl(handoffProject, 'resume')}&handoff=${encodeURIComponent(gonePath)}`)
+    check('handoff resume: a deleted document is reported missing, not silently resumed', resumeMissing.targets?.handoff?.exists === false)
+    const resumeNoPath = await fetch(`${BASE}${promptUrl(handoffProject, 'resume')}`)
+    check('handoff resume: without a path it is a 400', resumeNoPath.status === 400, `HTTP ${resumeNoPath.status}`)
+
+    const forgotten = await postJson('/api/developer-workbench/projects/handoff', { path: handoffProject, handoffPath: handoffFile, forget: true })
+    check('handoff record: forgetting drops the entry rather than leaving a dead link', forgotten.status === 200 && !forgotten.body.handoffs.some((row) => row.path === handoffFile), `HTTP ${forgotten.status}`)
+    fs.rmSync(path.dirname(handoffFile), { recursive: true, force: true })
 
     // Live: this repository at implement, which must name a real startable ticket.
     const livePrompt = await getJson(promptUrl(path.resolve(HERE, '..', '..'), 'implement'))

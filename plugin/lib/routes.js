@@ -9,11 +9,13 @@
  * @module lib/routes
  */
 
+import fs from 'node:fs'
 import path from 'node:path'
 
 import { readArtifactPreview, scanArtifacts } from './artifacts.js'
+import { nextHandoffPath } from './handoffs.js'
 import { describeProject, probeDirectory } from './projects.js'
-import { PROMPT_STAGES, buildDispatchPrompt, readTriageLabels } from './prompts.js'
+import { PROMPT_STAGES, buildDispatchPrompt, findDispatchable, readTriageLabels } from './prompts.js'
 import { STAGES, deriveStage } from './stage.js'
 import { analyseBoard, createCommandRunner, readGitHubTickets, readLocalTickets, resolveGitHubRepo } from './tickets.js'
 import { readSkillInventory, reconcileSkills } from './skills.js'
@@ -565,7 +567,7 @@ export function buildRoutes({ ctx, store, info, now = () => new Date(), run = cr
           sendJson(res, 400, { error: 'path and stage are required' })
           return
         }
-        const entry = STAGES.find((stage) => stage.id === stageId)
+        const entry = findDispatchable(stageId)
         if (entry === undefined) {
           sendJson(res, 400, { error: `unknown stage: ${stageId}`, accepted: PROMPT_STAGES })
           return
@@ -588,6 +590,22 @@ export function buildRoutes({ ctx, store, info, now = () => new Date(), run = cr
         const workspace = workspaces.find((candidate) => path.resolve(candidate.path) === resolved) ?? null
         const title = workspace?.title ?? path.basename(resolved)
 
+        // Handoff documents are the one artifact whose path the workbench must
+        // choose itself: the temp directory has no per-project structure, and the
+        // upstream skill prescribes no file name — so nothing else could list it.
+        let handoffPath = null
+        if (entry.id === 'handoff') {
+          handoffPath = nextHandoffPath(resolved)
+        } else if (entry.id === 'resume') {
+          const wanted = queryParam(req, 'handoff')
+          if (wanted === null) {
+            sendJson(res, 400, { error: 'resuming a handoff needs its path' })
+            return
+          }
+          handoffPath = path.resolve(wanted)
+        }
+        const handoffExists = handoffPath === null ? null : fs.existsSync(handoffPath)
+
         const built = buildDispatchPrompt({
           stage: entry,
           skillsDir: info.skillsDir,
@@ -596,6 +614,7 @@ export function buildRoutes({ ctx, store, info, now = () => new Date(), run = cr
           project: { path: resolved, title },
           ticket,
           triageLabels: readTriageLabels(resolved),
+          handoffPath,
         })
 
         sendJson(res, 200, {
@@ -607,6 +626,7 @@ export function buildRoutes({ ctx, store, info, now = () => new Date(), run = cr
             tracker,
             repository: board.repository ?? null,
             ticket: ticket === null ? null : { id: ticket.id, title: ticket.title, url: ticket.url ?? null },
+            handoff: handoffPath === null ? null : { path: handoffPath, exists: handoffExists },
             board: { state: board.state, frontier: board.frontier ?? [] },
           },
         })
@@ -681,5 +701,48 @@ export function buildRoutes({ ctx, store, info, now = () => new Date(), run = cr
     },
   }
 
-  return [health, skills, skillStatus, overview, probe, artifacts, artifact, tickets, stage, prompt, bind, setTracker, setStage, unbind]
+  const handoffRecord = {
+    kind: 'exact',
+    path: `${ROUTE_BASE}/projects/handoff`,
+    handler: async (req, res) => {
+      try {
+        const body = await readJsonBody(req)
+        const raw = typeof body.path === 'string' ? body.path.trim() : ''
+        const handoff = typeof body.handoffPath === 'string' ? body.handoffPath.trim() : ''
+        if (raw.length === 0 || handoff.length === 0) {
+          sendJson(res, 400, { error: 'path and handoffPath are required' })
+          return
+        }
+        const resolved = path.resolve(raw)
+        const key = projectKey(resolved)
+        const existing = Array.isArray(store.get(key)?.handoffs) ? store.get(key).handoffs : []
+        const absolute = path.resolve(handoff)
+
+        let next
+        if (body.forget === true) {
+          // A document somebody deleted should be droppable from the list, or the
+          // entry becomes a dead link the user cannot get rid of.
+          next = existing.filter((row) => row.path !== absolute)
+        } else if (existing.some((row) => row.path === absolute)) {
+          next = existing
+        } else {
+          next = [
+            {
+              path: absolute,
+              createdAt: now().toISOString(),
+              sessionId: typeof body.sessionId === 'string' ? body.sessionId : null,
+            },
+            ...existing,
+          ].slice(0, 50)
+        }
+
+        store.upsert(key, { path: resolved, handoffs: next })
+        sendJson(res, 200, { ok: true, handoffs: next })
+      } catch (error) {
+        fail(res, 500, error)
+      }
+    },
+  }
+
+  return [health, skills, skillStatus, overview, probe, artifacts, artifact, tickets, stage, prompt, bind, setTracker, setStage, handoffRecord, unbind]
 }
